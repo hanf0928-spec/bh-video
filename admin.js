@@ -567,13 +567,14 @@
         libraryTbody.innerHTML = list
           .map(function (s, i) {
             const epCount = (s.episodes || []).length;
+            const safeId = esc(s.id);
             return (
               "<tr>" +
               "<td>" +
               (i + 1) +
               "</td>" +
               "<td>" +
-              esc(s.id) +
+              safeId +
               "</td>" +
               "<td>" +
               esc(s.title) +
@@ -584,17 +585,106 @@
               '<td class="num">' +
               epCount +
               "</td>" +
-              '<td><a class="btn-link" target="_blank" href="player.html?id=' +
+              '<td class="row-actions">' +
+              '<a class="btn-link" target="_blank" href="player.html?id=' +
               encodeURIComponent(s.id) +
-              '">查看</a></td>' +
+              '">查看</a>' +
+              ' <button type="button" class="btn-link btn-link-danger" data-del-series-id="' +
+              safeId +
+              '" data-del-series-title="' +
+              esc(s.title) +
+              '">🗑️ 删除</button>' +
+              "</td>" +
               "</tr>"
             );
           })
           .join("");
+
+        // Bind row-level delete handlers after render.
+        libraryTbody
+          .querySelectorAll("button[data-del-series-id]")
+          .forEach(function (btn) {
+            btn.addEventListener("click", function () {
+              const id = btn.getAttribute("data-del-series-id");
+              const title = btn.getAttribute("data-del-series-title") || id;
+              deleteSeries(id, title);
+            });
+          });
       })
       .catch(function () {});
   }
   reloadLibraryBtn.addEventListener("click", loadLibrary);
+
+  function deleteSeries(id, title) {
+    if (!id) return;
+    if (!window.confirm('确认删除作品《' + title + '》？此操作不可恢复。')) {
+      return;
+    }
+    fetch("/api/library/" + encodeURIComponent(id), {
+      method: "DELETE",
+      headers: { Authorization: "Bearer " + getToken() },
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok && d.ok, d: d, status: r.status };
+        });
+      })
+      .then(function (res) {
+        if (!res.ok) {
+          window.alert(
+            "删除失败：" + ((res.d && res.d.error) || "HTTP " + res.status)
+          );
+          return;
+        }
+        loadLibrary();
+      })
+      .catch(function (err) {
+        window.alert("请求异常：" + (err && err.message));
+      });
+  }
+
+  const clearLibraryBtn = document.getElementById("clearLibraryBtn");
+  if (clearLibraryBtn) {
+    clearLibraryBtn.addEventListener("click", function () {
+      if (
+        !window.confirm(
+          "⚠️ 此操作会清空全部已上传作品，且不可恢复。\n\n确定要继续吗？"
+        )
+      ) {
+        return;
+      }
+      if (
+        !window.confirm(
+          "最后一次确认：真的要清空全部作品吗？"
+        )
+      ) {
+        return;
+      }
+      fetch("/api/library?confirm=yes", {
+        method: "DELETE",
+        headers: { Authorization: "Bearer " + getToken() },
+      })
+        .then(function (r) {
+          return r.json().then(function (d) {
+            return { ok: r.ok && d.ok, d: d, status: r.status };
+          });
+        })
+        .then(function (res) {
+          if (!res.ok) {
+            window.alert(
+              "清空失败：" +
+                ((res.d && res.d.error) || "HTTP " + res.status)
+            );
+            return;
+          }
+          window.alert("已清空 " + (res.d.removed || 0) + " 部作品");
+          loadLibrary();
+        })
+        .catch(function (err) {
+          window.alert("请求异常：" + (err && err.message));
+        });
+    });
+  }
 
   /* ---------- Load dashboard data ---------- */
   function loadOverview() {

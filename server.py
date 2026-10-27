@@ -23,6 +23,8 @@ POST /api/import               — add imported series (JSON body).
 POST /api/import/file          — add imported series (JSON file upload).
 POST /api/cos/preview          — scan a Tencent COS prefix, preview episodes.
 POST /api/cos/import           — scan a Tencent COS prefix, import as a series.
+DELETE /api/library/<id>       — remove a single imported series by id.
+DELETE /api/library?confirm=yes — wipe the entire imported library.
 POST /api/ads/track            — record ad impression / click events.
 POST /api/admin/login          — password-gated login, returns a token.
 GET  /api/admin/overview       — aggregated dashboard payload (token req.).
@@ -824,6 +826,88 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         if path == "/api/cos/import":
             return self._handle_cos_import()
         self._send_error_json(HTTPStatus.NOT_FOUND, "unknown endpoint")
+
+    def do_DELETE(self):
+        """
+        Deletes imported series from the library.
+          DELETE /api/library            → clear all (requires ?confirm=yes)
+          DELETE /api/library/<id>       → remove a single series by id
+        Both routes require a valid admin token.
+        """
+        path = self.path.split("?", 1)[0]
+        if path == "/api/library":
+            return self._handle_library_clear()
+        if path.startswith("/api/library/"):
+            series_id = path[len("/api/library/"):]
+            # URL-decode in case the id contains percent-encoded chars.
+            try:
+                from urllib.parse import unquote
+                series_id = unquote(series_id)
+            except Exception:
+                pass
+            return self._handle_library_delete_one(series_id)
+        self._send_error_json(HTTPStatus.NOT_FOUND, "unknown endpoint")
+
+    def _handle_library_delete_one(self, series_id):
+        """Remove exactly one series by id from videos.local.json."""
+        ok, err = self._auth_admin()
+        if not ok:
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, err)
+            return
+
+        series_id = (series_id or "").strip()
+        if not series_id:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "missing series id")
+            return
+
+        with _library_lock:
+            existing = _load_library()
+            kept = [s for s in existing if not (
+                isinstance(s, dict) and s.get("id") == series_id
+            )]
+            removed = len(existing) - len(kept)
+            if removed <= 0:
+                self._send_error_json(
+                    HTTPStatus.NOT_FOUND,
+                    "series not found: " + series_id,
+                )
+                return
+            _save_library(kept)
+
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "removed": removed, "remaining": len(kept)},
+        )
+
+    def _handle_library_clear(self):
+        """Wipe the entire imported library. Requires ?confirm=yes."""
+        ok, err = self._auth_admin()
+        if not ok:
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, err)
+            return
+
+        qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+        confirm = ""
+        for part in qs.split("&"):
+            if part.startswith("confirm="):
+                confirm = part[len("confirm="):].strip().lower()
+                break
+        if confirm not in ("yes", "true", "1"):
+            self._send_error_json(
+                HTTPStatus.BAD_REQUEST,
+                "此操作会清空全部作品，必须带 ?confirm=yes",
+            )
+            return
+
+        with _library_lock:
+            existing = _load_library()
+            removed = len(existing)
+            _save_library([])
+
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "removed": removed, "remaining": 0},
+        )
 
     def _auth_admin(self):
         """Return (ok, error_message). Checks Authorization / ?token=."""

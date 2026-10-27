@@ -1,0 +1,25 @@
+[Unit]
+Description=BH Video backend (Python http.server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/bh-video
+ExecStart=/usr/bin/python3 /opt/bh-video/server.py 8765
+Restart=on-failure
+RestartSec=3
+StandardOutput=append:/var/log/bh-video.log
+StandardError=append:/var/log/bh-video.err.log
+
+# Harden a bit — this service only needs to read its own dir and write
+# the JSON data files inside it.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
