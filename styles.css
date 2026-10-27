@@ -187,13 +187,21 @@ button {
   color: var(--text);
 }
 
-/* ---------- Hero ---------- */
+/* ---------- Hero (vertical short-drama poster carousel) ----------
+ * Short-drama platforms (抖音/快手/红果等) show the hero as a tall
+ * vertical poster — 9:16 cover, big title underneath. We mimic the
+ * same look here, keeping the auto-rotating carousel but swapping
+ * the aspect ratio from 16:9 to 9:16 (clamped to viewport height
+ * so laptops don't need to scroll just to see the hero).
+ */
 .hero {
   position: relative;
-  margin: 28px 0 36px;
-  border-radius: var(--radius);
+  margin: 28px auto 36px;
+  border-radius: 20px;
   overflow: hidden;
-  min-height: 320px;
+  width: min(360px, 92vw);
+  aspect-ratio: 9 / 16;
+  max-height: 72vh;
   background: var(--bg-elev);
   box-shadow: var(--shadow);
   cursor: pointer;
@@ -224,18 +232,18 @@ button {
   position: relative; /* makes the hero container get a real height */
 }
 
-/* Dark gradient overlay lives on the slide so each background gets its
- * own fade, instead of a single ::before on the hero container (which
- * would also sit on top of other slide backgrounds during a crossfade). */
+/* Dark gradient overlay now runs top → bottom so the title/CTA at
+ * the bottom of the vertical poster stays readable regardless of
+ * how bright the cover image is. */
 .hero-slide::before {
   content: "";
   position: absolute;
   inset: 0;
   background: linear-gradient(
-    90deg,
-    rgba(15, 15, 18, 0.92) 0%,
-    rgba(15, 15, 18, 0.65) 45%,
-    rgba(15, 15, 18, 0.1) 100%
+    180deg,
+    rgba(15, 15, 18, 0.1) 0%,
+    rgba(15, 15, 18, 0.3) 45%,
+    rgba(15, 15, 18, 0.92) 100%
   );
   z-index: 0;
 }
@@ -264,8 +272,13 @@ button {
  * (removed) so legacy references don't accidentally match. */
 
 .hero-content {
-  padding: 60px 48px;
-  max-width: 640px;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 20px 20px 40px;
+  max-width: 100%;
+  box-sizing: border-box;
 }
 
 .hero-badge {
@@ -282,28 +295,36 @@ button {
 }
 
 .hero h1 {
-  font-size: 38px;
-  margin: 0 0 12px;
-  line-height: 1.15;
+  font-size: 22px;
+  margin: 0 0 8px;
+  line-height: 1.2;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .hero p {
   color: var(--text-dim);
-  margin: 0 0 24px;
-  font-size: 15px;
+  margin: 0 0 14px;
+  font-size: 13px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .hero .play-now {
   display: inline-flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   background: #fff;
   color: #111;
-  padding: 12px 22px;
+  padding: 9px 18px;
   border: none;
   border-radius: 999px;
   font-weight: 700;
-  font-size: 15px;
+  font-size: 13px;
   transition: transform var(--transition);
 }
 
@@ -314,11 +335,11 @@ button {
 /* ---- Carousel dot indicators ---- */
 .hero-dots {
   position: absolute;
-  bottom: 18px;
+  bottom: 12px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
-  gap: 8px;
+  gap: 6px;
   z-index: 3;
 }
 
@@ -387,10 +408,13 @@ button {
   padding-bottom: 60px;
 }
 
+/* Vertical poster grid — like TikTok/YouTube Shorts browse page.
+ * Each card is a 9:16 cover, so cards are slimmer and we can fit more
+ * per row. On phones this naturally falls back to a 2-column layout. */
 .video-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 24px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 20px 14px;
 }
 
 .video-card {
@@ -409,9 +433,9 @@ button {
 
 .thumb {
   position: relative;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 9 / 16;
   background: var(--bg-elev);
-  border-radius: var(--radius);
+  border-radius: 14px;
   overflow: hidden;
 }
 
@@ -465,11 +489,11 @@ button {
 }
 
 .card-body {
-  padding: 12px 4px 4px;
+  padding: 10px 4px 4px;
 }
 
 .card-title {
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   margin: 0 0 4px;
   display: -webkit-box;
@@ -480,7 +504,7 @@ button {
 }
 
 .card-meta {
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text-dim);
 }
 
@@ -546,20 +570,39 @@ button {
   background: var(--bg);
 }
 
+/* Vertical phone-style layout: a narrow 9:16 player on the left,
+ * episode sidebar on the right. The player is width-capped so even
+ * on a 1920px monitor it stays phone-sized and feels native. */
 .player-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-columns: minmax(0, 420px) 1fr;
+  justify-content: center;
   gap: 32px;
   margin: 28px auto 60px;
   align-items: start;
 }
 
+.player-main {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+}
+
 .player-shell {
   background: #000;
-  border-radius: var(--radius);
+  border-radius: 18px;
   overflow: hidden;
   box-shadow: var(--shadow);
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 9 / 16;
+  width: 100%;
+  max-width: 420px;
+  max-height: 80vh;
+}
+
+.player-meta {
+  width: 100%;
+  max-width: 420px;
 }
 
 .player-shell video {
@@ -666,7 +709,7 @@ button {
   white-space: pre-wrap;
 }
 
-/* Up next sidebar */
+/* Up next sidebar — vertical thumbs now that episodes are shot in 9:16 */
 .up-next .section-title {
   margin-top: 0;
 }
@@ -674,16 +717,17 @@ button {
 .up-next-list {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .up-next-item {
   display: grid;
-  grid-template-columns: 168px 1fr;
+  grid-template-columns: 84px 1fr;
   gap: 12px;
+  align-items: center;
   cursor: pointer;
-  border-radius: 8px;
-  padding: 4px;
+  border-radius: 10px;
+  padding: 6px;
   transition: background var(--transition);
 }
 
@@ -693,6 +737,8 @@ button {
 
 .up-next-item .thumb {
   border-radius: 8px;
+  aspect-ratio: 9 / 16;
+  width: 84px;
 }
 
 .up-next-item .un-title {
@@ -1005,6 +1051,11 @@ button {
 @media (max-width: 1000px) {
   .player-layout {
     grid-template-columns: 1fr;
+    justify-content: stretch;
+  }
+  .player-shell,
+  .player-meta {
+    max-width: 100%;
   }
   .top-nav {
     display: none;
@@ -1013,23 +1064,34 @@ button {
 
 @media (max-width: 720px) {
   .container {
-    padding: 0 16px;
+    padding: 0 12px;
   }
   .header-inner {
     gap: 12px;
   }
+  .hero {
+    width: 92vw;
+    max-height: none;
+  }
   .hero-content {
-    padding: 32px 24px;
+    padding: 16px 16px 32px;
   }
   .hero h1 {
-    font-size: 26px;
+    font-size: 20px;
   }
   .video-grid {
-    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-    gap: 16px;
+    /* Phone: two columns of tall posters, snug gutter.             */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 10px;
   }
   .up-next-item {
-    grid-template-columns: 140px 1fr;
+    grid-template-columns: 72px 1fr;
+  }
+  .up-next-item .thumb {
+    width: 72px;
+  }
+  .card-title {
+    font-size: 14px;
   }
 }
 
@@ -1192,9 +1254,9 @@ button {
 
 .bhv-ad-preroll-inner {
   position: relative;
-  width: 100%;
-  max-width: 960px;
-  aspect-ratio: 16 / 9;
+  width: min(360px, 92vw);
+  aspect-ratio: 9 / 16;
+  max-height: 80vh;
   background: #000;
   border-radius: var(--radius);
   overflow: hidden;
@@ -1286,4 +1348,570 @@ button {
   .bhv-ad-float .bhv-ad-img {
     height: 140px !important;
   }
+}
+
+/* =========================================================
+   Countdown state for the ad close button
+   -----------------------------------------------------
+   During the 5-second grace period the "×" is replaced by
+   the remaining seconds ("5" → "4" → …) and locked. Once
+   the timer hits 0 the button switches back to the normal
+   "×" style (handled by removing .bhv-ad-close--countdown
+   in JS).
+   ========================================================= */
+.bhv-ad-close.bhv-ad-close--countdown {
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  cursor: not-allowed;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.bhv-ad-close.bhv-ad-close--countdown:hover {
+  background: rgba(0, 0, 0, 0.72);
+  transform: none;
+}
+.bhv-ad-close:disabled {
+  cursor: not-allowed;
+}
+
+/* =========================================================
+   Immersive vertical feed ("红果" style)
+   -----------------------------------------------------
+   The home page becomes a single column of full-viewport
+   cards that users swipe up/down to browse. Everything
+   outside the <main class="feed-container"> is floating
+   overlay chrome (logo, search, language switcher).
+   ========================================================= */
+
+body.feed-page {
+  background: #000;
+  overflow: hidden;              /* no body scroll — the feed scrolls */
+  overscroll-behavior: contain;
+}
+
+/* ---- Floating top chrome ---- */
+.feed-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  pointer-events: none;         /* let video gestures pass through */
+  background: linear-gradient(180deg, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0) 100%);
+}
+
+.feed-topbar > * {
+  pointer-events: auto;         /* re-enable on the actual chrome */
+}
+
+.feed-logo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #fff;
+  font-weight: 700;
+  font-size: 18px;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.feed-logo .logo-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  font-size: 14px;
+}
+
+.feed-logo .accent {
+  color: var(--accent);
+}
+
+.feed-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.feed-icon-btn {
+  width: 38px;
+  height: 38px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background var(--transition), transform var(--transition);
+}
+
+.feed-icon-btn:hover {
+  background: rgba(0, 0, 0, 0.65);
+  transform: scale(1.05);
+}
+
+/* ---- Search panel ---- */
+.feed-search-panel {
+  position: fixed;
+  top: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  width: min(420px, 92vw);
+  background: rgba(22, 22, 28, 0.96);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 10px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  animation: feedSearchIn 180ms ease;
+}
+
+@keyframes feedSearchIn {
+  from { opacity: 0; transform: translate(-50%, -8px); }
+  to   { opacity: 1; transform: translate(-50%, 0); }
+}
+
+.feed-search-panel input {
+  width: 100%;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 42px 10px 14px;
+  font-size: 14px;
+  outline: none;
+  box-sizing: border-box;
+}
+
+.feed-search-panel input:focus {
+  border-color: var(--accent);
+}
+
+.feed-search-panel > button {
+  position: absolute;
+  right: 20px;
+  top: 20px;
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  padding: 4px;
+  display: grid;
+  place-items: center;
+}
+
+.feed-search-results {
+  max-height: 60vh;
+  overflow-y: auto;
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.feed-search-row {
+  display: grid;
+  grid-template-columns: 48px 1fr;
+  gap: 10px;
+  align-items: center;
+  padding: 6px;
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.feed-search-row:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.feed-search-thumb {
+  width: 48px;
+  aspect-ratio: 9 / 16;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-elev);
+}
+.feed-search-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.feed-search-title {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.feed-search-sub {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.feed-search-empty {
+  text-align: center;
+  padding: 24px 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ---- Feed container & items ---- */
+.feed-container {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;                /* iOS/Android dynamic viewport */
+  overflow-y: scroll;
+  scroll-snap-type: y mandatory;
+  scrollbar-width: none;         /* Firefox */
+  -ms-overflow-style: none;      /* IE */
+  overscroll-behavior: contain;
+  background: #000;
+}
+.feed-container::-webkit-scrollbar {
+  display: none;                 /* Chrome / Safari */
+}
+
+.feed-item {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  height: 100dvh;
+  scroll-snap-align: start;
+  scroll-snap-stop: always;
+  overflow: hidden;
+  background: #000;
+  color: #fff;
+}
+
+.feed-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;           /* keep 9:16 content un-cropped */
+  background: #000;
+  cursor: pointer;
+}
+
+.feed-gradient {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(180deg,
+      rgba(0,0,0,0.4) 0%,
+      rgba(0,0,0,0) 20%,
+      rgba(0,0,0,0) 55%,
+      rgba(0,0,0,0.85) 100%);
+}
+
+/* Big center play icon — only visible while paused */
+.feed-playpause {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 160ms ease, transform 160ms ease;
+}
+.feed-item.is-paused .feed-playpause {
+  opacity: 1;
+  pointer-events: auto;
+  transform: scale(1);
+}
+
+/* ---- Right-side action rail ---- */
+.feed-side {
+  position: absolute;
+  right: 14px;
+  bottom: 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  z-index: 5;
+}
+
+.feed-side-btn {
+  background: transparent;
+  border: none;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 0;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.feed-side-btn svg {
+  filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.6));
+  transition: transform 160ms ease, color 160ms ease;
+}
+
+.feed-side-btn:hover svg {
+  transform: scale(1.1);
+}
+
+.feed-side-btn.liked svg {
+  color: var(--accent);
+  fill: var(--accent);
+}
+
+.feed-side-label {
+  font-size: 12px;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: center;
+}
+
+/* ---- Bottom info block ---- */
+.feed-info {
+  position: absolute;
+  left: 0;
+  right: 72px;                   /* leave room for the side rail */
+  bottom: 22px;
+  padding: 0 18px;
+  z-index: 4;
+  pointer-events: none;
+}
+
+.feed-ep-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.45);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.feed-ep-chip {
+  color: var(--accent-2);
+}
+.feed-ep-sep {
+  opacity: 0.5;
+}
+.feed-ep-total {
+  opacity: 0.9;
+}
+
+.feed-title {
+  font-size: 18px;
+  font-weight: 700;
+  line-height: 1.3;
+  margin: 0 0 6px;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.65);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.feed-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.feed-tag {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+
+.feed-desc {
+  margin: 0;
+  font-size: 13px;
+  color: rgba(255, 255, 255, 0.82);
+  line-height: 1.45;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.7);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ---- Progress bar ---- */
+.feed-progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: rgba(255, 255, 255, 0.15);
+  z-index: 3;
+}
+.feed-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  transition: width 180ms linear;
+}
+
+/* ---- Empty state ---- */
+.feed-empty {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  color: var(--text-dim);
+  z-index: 10;
+  pointer-events: none;
+}
+.feed-empty-icon {
+  font-size: 48px;
+  margin-bottom: 8px;
+}
+
+/* ---- Episode-picker bottom sheet ---- */
+.feed-ep-sheet {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0);
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  transition: background 240ms ease;
+}
+.feed-ep-sheet.open {
+  background: rgba(0, 0, 0, 0.55);
+}
+.feed-ep-sheet-inner {
+  width: 100%;
+  max-width: 520px;
+  background: var(--bg-elev);
+  border-radius: 18px 18px 0 0;
+  padding: 16px 18px 24px;
+  max-height: 65vh;
+  overflow-y: auto;
+  transform: translateY(100%);
+  transition: transform 240ms ease;
+}
+.feed-ep-sheet.open .feed-ep-sheet-inner {
+  transform: translateY(0);
+}
+.feed-ep-sheet-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+.feed-ep-sheet-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.feed-ep-sheet-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 20px;
+  display: grid;
+  place-items: center;
+}
+.feed-ep-sheet-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: 10px;
+}
+.feed-ep-cell {
+  padding: 10px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  transition: background var(--transition), color var(--transition),
+    border-color var(--transition);
+}
+.feed-ep-cell:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+.feed-ep-cell.active {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  border-color: transparent;
+}
+
+/* ---- Ad overlays on feed page: avoid blocking the UX ---- */
+body.feed-page .bhv-ad-banner {
+  position: fixed;
+  left: 0;
+  right: 0;
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 0 12px;
+  z-index: 55;
+}
+body.feed-page .bhv-ad-banner--top {
+  top: 60px;                     /* just under the floating logo bar */
+}
+body.feed-page .bhv-ad-banner--bottom {
+  bottom: 10px;
+}
+body.feed-page .bhv-ad-banner .bhv-ad-img {
+  max-height: 72px;
+  border-radius: 10px;
+}
+body.feed-page .bhv-ad-tag {
+  top: 8px;
+  left: 20px;
+}
+body.feed-page .bhv-ad-close {
+  top: 6px;
+  right: 18px;
+}
+
+/* ---- Small-screen tweaks ---- */
+@media (max-width: 480px) {
+  .feed-title { font-size: 17px; }
+  .feed-desc  { font-size: 12px; }
+  .feed-side  { bottom: 100px; gap: 18px; }
+  .feed-side-btn svg { width: 26px; height: 26px; }
+  .feed-info  { right: 64px; padding: 0 14px; }
 }

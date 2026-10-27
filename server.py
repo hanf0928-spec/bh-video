@@ -736,8 +736,49 @@ def _validate_admin_token(tok):
 class BHVideoHandler(SimpleHTTPRequestHandler):
     """Static file server with extra /api/* endpoints."""
 
+    # Static assets we never want browsers (or intermediate caches) to
+    # hold onto — these are the entry files whose contents can change
+    # on every deploy without filename-level versioning. The rest
+    # (images, mp4, fonts) are allowed to use the default heuristic
+    # cache since they're content-addressed by URL.
+    _NO_CACHE_SUFFIXES = (".html", ".htm", ".js", ".css", ".json", ".map")
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT_DIR, **kwargs)
+
+    def end_headers(self):
+        """
+        Inject Cache-Control before every response is finalised.
+
+        For HTML/JS/CSS/JSON we send ``no-cache`` (not ``no-store``):
+        browsers may keep a local copy, but must revalidate with the
+        server via ``If-Modified-Since`` on every reload — so a code
+        push is picked up on the user's next refresh instead of being
+        shadowed by a stale cache for minutes/hours.
+        API handlers set their own ``Cache-Control: no-store`` via
+        :meth:`_send_json` before calling :meth:`end_headers`; the
+        duplicate header is harmless but we skip the override when a
+        value has already been sent to keep responses tidy.
+        """
+        try:
+            path = (self.path or "").split("?", 1)[0].split("#", 1)[0].lower()
+            if path.endswith(self._NO_CACHE_SUFFIXES) or path == "/" or path.endswith("/"):
+                # SimpleHTTPRequestHandler keeps a list of pending
+                # headers in ``self._headers_buffer``; peek at it so we
+                # don't double-stamp a route that already set one.
+                buf = getattr(self, "_headers_buffer", []) or []
+                if not any(
+                    isinstance(h, (bytes, bytearray))
+                    and h.lower().startswith(b"cache-control:")
+                    for h in buf
+                ):
+                    self.send_header("Cache-Control", "no-cache, must-revalidate")
+                    self.send_header("Pragma", "no-cache")
+                    self.send_header("Expires", "0")
+        except Exception:
+            # Never let a header-injection bug sink a response.
+            pass
+        super().end_headers()
 
     # ---- API helpers ------------------------------------------------------
     def _send_json(self, status, payload):

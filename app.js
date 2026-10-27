@@ -1,35 +1,48 @@
 /* =========================================================
-   BH Video — Home page logic
-   - Renders the hero, category chips and the SERIES grid.
-   - Each card represents a short-drama series (one cover, total
-     play-count summed across all of its episodes).
-   - Clicking a card opens player.html?id=<seriesId>&ep=1 in a
-     NEW TAB/WINDOW (per user requirement). The player page handles
-     episode selection from there.
-   - "Import" button lets an editor upload an Excel/CSV that adds
-     new series + episodes to the catalog (persisted by the backend
-     into videos.local.json).
-   - All user-facing strings go through window.I18N.
+   BH Video — Home page (immersive vertical feed, "红果" style)
+   -----------------------------------------------------------
+   Behaviour summary:
+   - The home page is a full-screen vertical feed. Each snap
+     "card" occupies 100vw × 100vh and represents ONE series.
+   - Users swipe up/down to move between series (CSS scroll-snap
+     + IntersectionObserver).
+   - The card currently in view auto-plays episode 1. When an
+     episode ends we automatically advance to the next episode
+     of the SAME series. When the last episode of a series
+     finishes we stay on that card (user can swipe to the next
+     series or re-watch).
+   - Only the visible card has an active <video> element to
+     keep memory + bandwidth in check (we lazily hydrate the
+     neighbouring card's poster image).
+   - A top-right floating button acts as "back to home" — it
+     scrolls the feed back to the very first series.
+   - Clicking the on-video title/CTA opens player.html for
+     the dedicated player page (sharing / deep-links).
+   - Search still works: tapping the magnifier opens an overlay
+     list that filters series by title/tag; picking a result
+     scrolls the feed to that series.
    ========================================================= */
 
 (function () {
   "use strict";
 
   const Catalog = window.VideoCatalog;
-  const heroEl = document.getElementById("hero");
-  const categoryBar = document.getElementById("categoryBar");
-  const grid = document.getElementById("videoGrid");
-  const gridTitle = document.getElementById("gridTitle");
-  const emptyState = document.getElementById("emptyState");
+  const feedEl = document.getElementById("feed");
+  const emptyEl = document.getElementById("feedEmpty");
   const searchInput = document.getElementById("searchInput");
   const searchBtn = document.getElementById("searchBtn");
-  const importBtn = document.getElementById("importBtn");
+  const searchResults = document.getElementById("searchResults");
+  const searchToggleBtn = document.getElementById("feedSearchBtn");
+  const searchPanel = document.getElementById("feedSearchPanel");
 
-  // Real play counts fetched from the backend (server.py + views.json).
-  // Shape: { "<seriesId>:ep<n>": { opens, plays, ends } }. Empty until
-  // /api/stats resolves — the grid renders immediately and is re-rendered
-  // as soon as the real numbers arrive.
+  // Latest play counts from the backend. Shape:
+  //   { "<seriesId>:ep<n>": { opens, plays, ends } }
   let playStats = {};
+
+  // Per-series feed state. Map<seriesId, { currentEp, played: Set<n> }>
+  // We keep this at module scope so re-entering a card remembers which
+  // episode the user was last watching inside this tab.
+  const feedState = new Map();
 
   const i18n = window.I18N || {
     t: (k) => k,
@@ -39,16 +52,12 @@
   };
   const t = (k, p) => i18n.t(k, p);
 
-  /** Get the current series list (rebuilt by mergeImported when imports load). */
   function getSeriesList() {
     return window.VIDEOS || [];
   }
 
-  /**
-   * Try to fetch the merged library (built-in + imported) from the backend.
-   * If the API is unavailable (e.g. opened via file://) we silently fall
-   * back to the built-in list already present in window.VIDEOS.
-   */
+  /* ---------- API ---------- */
+
   function fetchLibrary() {
     return fetch("/api/library", { headers: { Accept: "application/json" } })
       .then((r) => (r.ok ? r.json() : null))
@@ -57,12 +66,9 @@
           Catalog.mergeImported(data.imported);
         }
       })
-      .catch(() => {
-        /* offline / no backend — keep built-ins */
-      });
+      .catch(() => {});
   }
 
-  /** Fetch real play counts for all known episodes. */
   function fetchPlayStats() {
     return fetch("/api/stats", { headers: { Accept: "application/json" } })
       .then((r) => (r.ok ? r.json() : {}))
@@ -74,7 +80,28 @@
       });
   }
 
-  /** Format a play count for display on a card (e.g. 1.2M, 12.3K, 999). */
+  function reportStat(seriesId, ep, event) {
+    if (!seriesId || !ep || !event) return;
+    const id = Catalog.episodeKey(seriesId, ep);
+    try {
+      fetch("/api/stats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, event }),
+        keepalive: true,
+      })
+        .then((r) => (r && r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && data.ok && data.stats) {
+            playStats[id] = data.stats;
+          }
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }
+
+  /* ---------- Formatting ---------- */
+
   function formatCount(n) {
     const num = Number(n) || 0;
     if (num >= 1_000_000)
@@ -83,7 +110,6 @@
     return String(num);
   }
 
-  /** Parse a static views label like "1.2M" / "523K" / "999" into a number. */
   function parseViewsLabel(label) {
     if (label == null) return 0;
     const s = String(label).trim().toUpperCase();
@@ -96,12 +122,6 @@
     return Math.round(n);
   }
 
-  /**
-   * Compute the total play count for a series by summing the real "plays"
-   * counters of every episode. If the backend hasn't reported anything for
-   * a given episode yet, we fall back to the static `views` label so the
-   * card still shows a friendly number.
-   */
   function seriesTotalPlays(series) {
     if (!series || !Array.isArray(series.episodes)) return 0;
     let total = 0;
@@ -117,732 +137,532 @@
     return total;
   }
 
-  /** Open the player page in a new tab on the first episode of a series. */
-  function openSeries(seriesId) {
-    const url = `player.html?id=${encodeURIComponent(seriesId)}&ep=1`;
-    window.open(url, "_blank", "noopener");
+  /* ---------- Feed rendering ---------- */
+
+  /**
+   * Build a single feed item: a 100vw × 100vh card containing a
+   * <video> element plus overlays (title, episode indicator,
+   * right-side actions, bottom CTA).
+   */
+  function buildFeedItem(series, index) {
+    const title = i18n.pickLocalized(series, "title");
+    const desc = i18n.pickLocalized(series, "description");
+    const tags = Array.isArray(series.tags) ? series.tags.slice(0, 3) : [];
+    const epCount = (series.episodes || []).length;
+    const totalPlays = formatCount(seriesTotalPlays(series));
+    const firstEp = (series.episodes || [])[0];
+    const poster = (firstEp && firstEp.thumbnail) || series.thumbnail || "";
+
+    const item = document.createElement("section");
+    item.className = "feed-item";
+    item.dataset.seriesId = series.id;
+    item.dataset.index = String(index);
+
+    item.innerHTML = `
+      <video class="feed-video"
+             playsinline webkit-playsinline
+             preload="none"
+             poster="${escapeAttr(poster)}"
+             data-series-id="${escapeAttr(series.id)}"></video>
+
+      <!-- Dark gradient so overlays stay readable on any poster -->
+      <div class="feed-gradient"></div>
+
+      <!-- Play / pause big center icon (only shown while paused) -->
+      <button class="feed-playpause" type="button" aria-label="播放/暂停">
+        <svg class="icon-play" viewBox="0 0 24 24" width="56" height="56" fill="#fff">
+          <path d="M8 5v14l11-7z"></path>
+        </svg>
+      </button>
+
+      <!-- Right-side action rail (like / share) -->
+      <div class="feed-side">
+        <button class="feed-side-btn feed-like" type="button" aria-label="点赞">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+          </svg>
+          <span class="feed-side-label">${escapeHtml(formatCount(totalPlays))}</span>
+        </button>
+
+        <button class="feed-side-btn feed-share" type="button" aria-label="分享">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3"></circle>
+            <circle cx="6" cy="12" r="3"></circle>
+            <circle cx="18" cy="19" r="3"></circle>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+          </svg>
+          <span class="feed-side-label" data-i18n="player.share">分享</span>
+        </button>
+
+        <button class="feed-side-btn feed-ep-picker" type="button" aria-label="选集">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+            <line x1="9" y1="4" x2="9" y2="20"></line>
+          </svg>
+          <span class="feed-side-label feed-ep-count">${escapeHtml(
+            t("series.epCount", { n: epCount })
+          )}</span>
+        </button>
+      </div>
+
+      <!-- Bottom info: title / tags / description -->
+      <div class="feed-info">
+        <div class="feed-ep-indicator">
+          <span class="feed-ep-chip" data-ep-chip>${escapeHtml(
+            t("series.epShort", { n: 1 })
+          )}</span>
+          <span class="feed-ep-sep">·</span>
+          <span class="feed-ep-total">${escapeHtml(
+            t("series.epCount", { n: epCount })
+          )}</span>
+        </div>
+        <h2 class="feed-title">${escapeHtml(title)}</h2>
+        ${
+          tags.length
+            ? `<div class="feed-tags">${tags
+                .map(
+                  (tag) =>
+                    `<span class="feed-tag">${escapeHtml(tag)}</span>`
+                )
+                .join("")}</div>`
+            : ""
+        }
+        <p class="feed-desc">${escapeHtml(desc)}</p>
+      </div>
+
+      <!-- Progress bar (bottom edge of the card) -->
+      <div class="feed-progress" aria-hidden="true">
+        <div class="feed-progress-fill" data-progress></div>
+      </div>
+    `;
+    return item;
   }
 
-  // Rotating hero banner state. We keep these at module scope so a
-  // rebuild (e.g. after the imported library finishes loading) can
-  // cleanly tear down the old timer.
-  let heroTimer = null;
-  let heroIndex = 0;
-  let heroSlides = [];
-
-  function stopHeroCarousel() {
-    if (heroTimer) {
-      clearInterval(heroTimer);
-      heroTimer = null;
+  /** Build the whole feed from the current series list. */
+  function renderFeed() {
+    const list = getSeriesList();
+    if (!list.length) {
+      feedEl.innerHTML = "";
+      emptyEl.hidden = false;
+      return;
     }
+    emptyEl.hidden = true;
+
+    const frag = document.createDocumentFragment();
+    list.forEach((s, i) => frag.appendChild(buildFeedItem(s, i)));
+    feedEl.innerHTML = "";
+    feedEl.appendChild(frag);
+
+    // Wire up every item.
+    feedEl.querySelectorAll(".feed-item").forEach((item) => bindFeedItem(item));
+
+    // Observe visibility so we can play the one in view.
+    observeFeedItems();
+
+    // Kick-off: start the first item explicitly (IntersectionObserver
+    // sometimes fires late on initial load).
+    const first = feedEl.querySelector(".feed-item");
+    if (first) activateItem(first);
   }
 
-  function showHeroSlide(idx) {
-    if (!heroSlides.length) return;
-    heroIndex = ((idx % heroSlides.length) + heroSlides.length) % heroSlides.length;
-    const slideEls = heroEl.querySelectorAll(".hero-slide");
-    const dotEls = heroEl.querySelectorAll(".hero-dot");
-    slideEls.forEach((el, i) => {
-      el.classList.toggle("active", i === heroIndex);
-    });
-    dotEls.forEach((el, i) => {
-      el.classList.toggle("active", i === heroIndex);
-    });
+  /* ---------- Per-item behaviour ---------- */
+
+  function getItemState(seriesId) {
+    let st = feedState.get(seriesId);
+    if (!st) {
+      st = { currentEp: 1, hasStarted: false };
+      feedState.set(seriesId, st);
+    }
+    return st;
   }
 
-  function startHeroCarousel() {
-    stopHeroCarousel();
-    if (heroSlides.length < 2) return;
-    heroTimer = setInterval(() => {
-      showHeroSlide(heroIndex + 1);
-    }, 5000);
+  function episodeByNum(series, epNum) {
+    if (!series || !Array.isArray(series.episodes)) return null;
+    const num = Number(epNum);
+    return (
+      series.episodes.find((e) => Number(e.ep) === num) || series.episodes[0]
+    );
   }
 
   /**
-   * Pick the 3 most recently imported series for the hero carousel.
-   * Falls back to catalog order when imported_at is missing (e.g.
-   * someone deleted the field by hand or re-serialised the file).
+   * Load a specific episode into the <video> element of a feed item.
+   * Updates the "第X集" chip, resets progress bar, triggers pre-roll
+   * ad gate, and auto-plays.
    */
-  function pickFeaturedSeries(list) {
-    const copy = list.slice();
-    copy.sort((a, b) => {
-      const ta = Number(a && a.imported_at) || 0;
-      const tb = Number(b && b.imported_at) || 0;
-      if (tb !== ta) return tb - ta;
-      // Stable fallback: keep catalog order so manual testing is
-      // predictable even without timestamps.
-      return 0;
-    });
-    return copy.slice(0, 3);
+  function loadEpisodeInto(item, series, epNum, opts) {
+    opts = opts || {};
+    const video = item.querySelector(".feed-video");
+    if (!video || !series) return;
+    const episode = episodeByNum(series, epNum);
+    if (!episode) return;
+
+    const chip = item.querySelector("[data-ep-chip]");
+    if (chip) chip.textContent = t("series.epShort", { n: episode.ep });
+
+    const progress = item.querySelector("[data-progress]");
+    if (progress) progress.style.width = "0%";
+
+    video.src = episode.src;
+    video.poster = episode.thumbnail || series.thumbnail || "";
+    video.dataset.epNum = String(episode.ep);
+    video.load();
+
+    const state = getItemState(series.id);
+    state.currentEp = episode.ep;
+
+    reportStat(series.id, episode.ep, "open");
+
+    // Pre-roll ad gate (same rule as player page).
+    const Ads = window.BHAds;
+    const shouldPreRoll =
+      opts.skipPreRoll
+        ? false
+        : Ads && typeof Ads.notifyEpisodeOpen === "function"
+        ? Ads.notifyEpisodeOpen(series.id, episode.ep)
+        : false;
+
+    const startPlay = () => {
+      // Only play if this item is still the active one.
+      if (!item.classList.contains("is-active")) return;
+      const p = video.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {
+          /* autoplay blocked — user can tap center icon */
+          item.classList.add("is-paused");
+        });
+      }
+    };
+
+    if (shouldPreRoll && Ads && typeof Ads.playPreRoll === "function") {
+      try { video.pause(); } catch (_) {}
+      Ads.playPreRoll().finally(() => {
+        if (
+          video.dataset.epNum === String(episode.ep) &&
+          video.dataset.seriesId === series.id
+        ) {
+          startPlay();
+        }
+      });
+    } else {
+      startPlay();
+    }
   }
 
-  /** Build the hero / featured banner as a rotating carousel. */
-  function renderHero() {
-    stopHeroCarousel();
+  /** Bind one feed item's internal events (play/pause, next-ep, side rail…). */
+  function bindFeedItem(item) {
+    const seriesId = item.dataset.seriesId;
+    const series = Catalog.findSeries(seriesId);
+    if (!series) return;
+    const video = item.querySelector(".feed-video");
+    const playBtn = item.querySelector(".feed-playpause");
+    const likeBtn = item.querySelector(".feed-like");
+    const shareBtn = item.querySelector(".feed-share");
+    const epPicker = item.querySelector(".feed-ep-picker");
+    const progress = item.querySelector("[data-progress]");
+
+    // Tap on the video area toggles play/pause.
+    video.addEventListener("click", () => togglePlay(item));
+    playBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      togglePlay(item);
+    });
+
+    // When the current episode ends → auto-advance to the next one.
+    video.addEventListener("ended", () => {
+      reportStat(series.id, Number(video.dataset.epNum) || 1, "ended");
+      const idx = series.episodes.findIndex(
+        (e) => Number(e.ep) === Number(video.dataset.epNum)
+      );
+      const next = idx >= 0 ? series.episodes[idx + 1] : null;
+      if (next) {
+        loadEpisodeInto(item, series, next.ep);
+      } else {
+        // End of the whole series — show replay icon.
+        item.classList.add("is-paused");
+      }
+    });
+
+    // Report "play" at most once per episode.
+    let lastPlayReportedEp = null;
+    video.addEventListener("play", () => {
+      item.classList.remove("is-paused");
+      const ep = Number(video.dataset.epNum) || 1;
+      const key = series.id + ":" + ep;
+      if (lastPlayReportedEp !== key) {
+        lastPlayReportedEp = key;
+        reportStat(series.id, ep, "play");
+      }
+    });
+    video.addEventListener("pause", () => {
+      if (!video.ended) item.classList.add("is-paused");
+    });
+
+    // Progress bar sync.
+    video.addEventListener("timeupdate", () => {
+      if (!progress || !video.duration) return;
+      const pct = (video.currentTime / video.duration) * 100;
+      progress.style.width = pct + "%";
+    });
+
+    // Like / share / episode picker.
+    likeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      likeBtn.classList.toggle("liked");
+    });
+    shareBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url =
+        location.origin +
+        "/player.html?id=" + encodeURIComponent(series.id) + "&ep=" +
+        (Number(video.dataset.epNum) || 1);
+      if (navigator.share) {
+        navigator.share({ title: series.title, url }).catch(() => {});
+      } else if (navigator.clipboard) {
+        navigator.clipboard.writeText(url).then(() => showToast(t("toast.linkCopied")));
+      }
+    });
+    epPicker.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openEpisodePicker(item, series);
+    });
+  }
+
+  function togglePlay(item) {
+    const video = item.querySelector(".feed-video");
+    if (!video) return;
+    if (video.paused) {
+      const p = video.play();
+      if (p && typeof p.catch === "function") p.catch(() => {});
+    } else {
+      video.pause();
+    }
+  }
+
+  /* ---------- Visibility / scroll-snap orchestration ---------- */
+
+  let feedObserver = null;
+
+  function observeFeedItems() {
+    if (feedObserver) {
+      try { feedObserver.disconnect(); } catch (_) {}
+    }
+    // threshold 0.6 → an item needs to occupy >60% of the viewport
+    // before it's considered "active". Prevents flicker during swipe.
+    feedObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio > 0.6) {
+            activateItem(entry.target);
+          } else {
+            deactivateItem(entry.target);
+          }
+        });
+      },
+      { root: feedEl, threshold: [0, 0.6, 1] }
+    );
+    feedEl.querySelectorAll(".feed-item").forEach((item) =>
+      feedObserver.observe(item)
+    );
+  }
+
+  function activateItem(item) {
+    if (item.classList.contains("is-active")) return;
+    feedEl.querySelectorAll(".feed-item.is-active").forEach((other) =>
+      deactivateItem(other)
+    );
+    item.classList.add("is-active");
+    const seriesId = item.dataset.seriesId;
+    const series = Catalog.findSeries(seriesId);
+    if (!series) return;
+    const state = getItemState(seriesId);
+    const video = item.querySelector(".feed-video");
+    // First time activating → load the right episode.
+    if (!state.hasStarted) {
+      state.hasStarted = true;
+      loadEpisodeInto(item, series, state.currentEp || 1);
+    } else {
+      // Re-entering a card: just resume whatever was playing.
+      const p = video.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => item.classList.add("is-paused"));
+      }
+    }
+  }
+
+  function deactivateItem(item) {
+    item.classList.remove("is-active");
+    const video = item.querySelector(".feed-video");
+    if (video) {
+      try { video.pause(); } catch (_) {}
+    }
+  }
+
+  /* ---------- Episode picker sheet ---------- */
+
+  let epSheetEl = null;
+  function openEpisodePicker(item, series) {
+    if (epSheetEl) epSheetEl.remove();
+    epSheetEl = document.createElement("div");
+    epSheetEl.className = "feed-ep-sheet";
+    epSheetEl.innerHTML = `
+      <div class="feed-ep-sheet-inner">
+        <div class="feed-ep-sheet-head">
+          <h3>${escapeHtml(i18n.pickLocalized(series, "title"))}</h3>
+          <button class="feed-ep-sheet-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="feed-ep-sheet-grid">
+          ${(series.episodes || [])
+            .map((e) => {
+              const isActive =
+                Number(e.ep) === Number(
+                  item.querySelector(".feed-video").dataset.epNum || 1
+                );
+              return `<button class="feed-ep-cell ${
+                isActive ? "active" : ""
+              }" data-ep="${escapeAttr(String(e.ep))}">${escapeHtml(
+                t("series.epShort", { n: e.ep })
+              )}</button>`;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
+    document.body.appendChild(epSheetEl);
+    requestAnimationFrame(() => epSheetEl.classList.add("open"));
+
+    epSheetEl.addEventListener("click", (e) => {
+      if (e.target === epSheetEl || e.target.closest(".feed-ep-sheet-close")) {
+        closeEpisodePicker();
+        return;
+      }
+      const cell = e.target.closest(".feed-ep-cell");
+      if (!cell) return;
+      const ep = Number(cell.dataset.ep);
+      closeEpisodePicker();
+      loadEpisodeInto(item, series, ep, { skipPreRoll: false });
+    });
+  }
+  function closeEpisodePicker() {
+    if (!epSheetEl) return;
+    const el = epSheetEl;
+    epSheetEl = null;
+    el.classList.remove("open");
+    setTimeout(() => { try { el.remove(); } catch (_) {} }, 260);
+  }
+
+  /* ---------- Search panel ---------- */
+
+  function toggleSearchPanel() {
+    if (!searchPanel) return;
+    searchPanel.hidden = !searchPanel.hidden;
+    if (!searchPanel.hidden) {
+      try { searchInput.focus(); } catch (_) {}
+      renderSearchResults("");
+    }
+  }
+
+  function renderSearchResults(term) {
     const list = getSeriesList();
-    if (!list.length) {
-      heroEl.innerHTML = "";
-      heroSlides = [];
-      heroEl.classList.remove("hero-has-carousel");
-      heroEl.onmouseenter = null;
-      heroEl.onmouseleave = null;
-      heroEl.onclick = null;
+    const q = (term || "").trim().toLowerCase();
+    const filtered = !q
+      ? list.slice(0, 20)
+      : list.filter((v) => {
+          const title = i18n.pickLocalized(v, "title") || "";
+          const desc = i18n.pickLocalized(v, "description") || "";
+          const tagsText = (Array.isArray(v.tags) ? v.tags : []).join(" ");
+          return (
+            title.toLowerCase().includes(q) ||
+            desc.toLowerCase().includes(q) ||
+            tagsText.toLowerCase().includes(q)
+          );
+        });
+
+    if (!filtered.length) {
+      searchResults.innerHTML =
+        `<div class="feed-search-empty">${escapeHtml(t("home.empty"))}</div>`;
       return;
     }
 
-    heroSlides = pickFeaturedSeries(list);
-
-    const slideHtml = heroSlides
-      .map((featured, idx) => {
-        const title = i18n.pickLocalized(featured, "title");
-        const desc = i18n.pickLocalized(featured, "description");
-        const epCount = (featured.episodes || []).length;
-        const tags = Array.isArray(featured.tags) ? featured.tags : [];
+    searchResults.innerHTML = filtered
+      .map((s) => {
+        const title = i18n.pickLocalized(s, "title");
+        const ep = (s.episodes || []).length;
         return `
-          <div class="hero-slide ${idx === 0 ? "active" : ""}" data-series-id="${escapeAttr(
-          featured.id
-        )}">
-            <div class="hero-bg" style="background-image:url('${featured.thumbnail}')"></div>
-            <div class="hero-content">
-              <span class="hero-badge">${escapeHtml(t("home.featured"))}</span>
-              <h1>${escapeHtml(title)}</h1>
-              ${
-                tags.length
-                  ? `<div class="hero-tags">${tags
-                      .map(
-                        (tag) =>
-                          `<span class="tag-chip">${escapeHtml(tag)}</span>`
-                      )
-                      .join("")}</div>`
-                  : ""
-              }
-              <p>${escapeHtml(desc)}</p>
-              <div class="hero-meta">
-                <span>${escapeHtml(t("series.epCount", { n: epCount }))}</span>
-                <span class="dot">•</span>
-                <span>${escapeHtml(
-                  formatCount(seriesTotalPlays(featured))
-                )} ${escapeHtml(t("card.viewsSuffix"))}</span>
-              </div>
-              <button class="play-now" type="button">
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-                  <path d="M8 5v14l11-7z"></path>
-                </svg>
-                ${escapeHtml(t("home.playNow"))}
-              </button>
+          <div class="feed-search-row" data-series-id="${escapeAttr(s.id)}">
+            <div class="feed-search-thumb">
+              <img src="${escapeAttr(s.thumbnail)}" alt="" loading="lazy" />
+            </div>
+            <div class="feed-search-meta">
+              <div class="feed-search-title">${escapeHtml(title)}</div>
+              <div class="feed-search-sub">${escapeHtml(
+                t("series.epCount", { n: ep })
+              )}</div>
             </div>
           </div>
         `;
       })
       .join("");
-
-    const dotsHtml =
-      heroSlides.length > 1
-        ? `<div class="hero-dots">${heroSlides
-            .map(
-              (_, idx) =>
-                `<button type="button" class="hero-dot ${
-                  idx === 0 ? "active" : ""
-                }" data-dot-idx="${idx}" aria-label="Slide ${idx + 1}"></button>`
-            )
-            .join("")}</div>`
-        : "";
-
-    heroEl.innerHTML = slideHtml + dotsHtml;
-    heroEl.classList.toggle("hero-has-carousel", heroSlides.length > 1);
-    heroIndex = 0;
-
-    // Click on the hero body → open currently-visible series.
-    heroEl.onclick = (e) => {
-      if (e.target.closest(".hero-dot")) return; // dots handled separately
-      const current = heroSlides[heroIndex];
-      if (current) openSeries(current.id);
-    };
-
-    // Dot navigation.
-    heroEl.querySelectorAll(".hero-dot").forEach((dot) => {
-      dot.addEventListener("click", (e) => {
-        e.stopPropagation();
-        const idx = Number(dot.getAttribute("data-dot-idx")) || 0;
-        showHeroSlide(idx);
-        // Reset auto-rotate so the user's choice stays visible for a
-        // full interval before the next slide takes over.
-        startHeroCarousel();
-      });
-    });
-
-    // Pause on hover so people can read the description.
-    heroEl.onmouseenter = stopHeroCarousel;
-    heroEl.onmouseleave = startHeroCarousel;
-
-    startHeroCarousel();
-  }
-
-  /** Build category chips from the unique set of categories. */
-  function renderCategories() {
-    const list = getSeriesList();
-    const set = new Set(list.map((v) => v.category).filter(Boolean));
-    const previouslyActive =
-      (categoryBar.querySelector(".chip.active") || {}).dataset?.category ||
-      "All";
-    const categories = ["All", ...Array.from(set)];
-
-    categoryBar.innerHTML = categories
-      .map(
-        (c) =>
-          `<button class="chip ${c === previouslyActive ? "active" : ""}" data-category="${escapeAttr(
-            c
-          )}">${escapeHtml(i18n.localizeCategory(c))}</button>`
-      )
-      .join("");
-  }
-
-  function bindCategoryEvents() {
-    categoryBar.addEventListener("click", (e) => {
-      const btn = e.target.closest(".chip");
-      if (!btn) return;
-      [...categoryBar.querySelectorAll(".chip")].forEach((c) =>
-        c.classList.remove("active")
-      );
-      btn.classList.add("active");
-      applyFilters();
-    });
-  }
-
-  /** Render the grid of series cards based on the supplied list. */
-  function renderGrid(list) {
-    if (!list.length) {
-      grid.innerHTML = "";
-      emptyState.hidden = false;
-      return;
-    }
-    emptyState.hidden = true;
-
-    grid.innerHTML = list
-      .map((s) => {
-        const title = i18n.pickLocalized(s, "title");
-        const totalViews = formatCount(seriesTotalPlays(s));
-        const epCount = (s.episodes || []).length;
-        const tags = Array.isArray(s.tags) ? s.tags.slice(0, 3) : [];
-        return `
-        <article class="video-card" data-id="${escapeAttr(s.id)}" tabindex="0" role="button"
-                 aria-label="${escapeAttr(t("card.openAria", { title }))}">
-          <div class="thumb">
-            <img src="${escapeAttr(s.thumbnail)}" alt="${escapeAttr(title)}"
-                 loading="lazy"
-                 onerror="this.style.background='linear-gradient(135deg,#2a2a36,#16161c)';this.removeAttribute('src');" />
-            <span class="duration">${escapeHtml(
-              t("series.epBadge", { n: epCount })
-            )}</span>
-            <div class="play-overlay"></div>
-          </div>
-          <div class="card-body">
-            <h3 class="card-title">${escapeHtml(title)}</h3>
-            ${
-              tags.length
-                ? `<div class="card-tags">${tags
-                    .map(
-                      (tag) =>
-                        `<span class="tag-chip tag-chip--sm">${escapeHtml(
-                          tag
-                        )}</span>`
-                    )
-                    .join("")}</div>`
-                : ""
-            }
-            <div class="card-meta">${escapeHtml(
-              t("series.epCount", { n: epCount })
-            )} • ${escapeHtml(totalViews)} ${escapeHtml(
-          t("card.viewsSuffix")
-        )}</div>
-          </div>
-        </article>
-      `;
-      })
-      .join("");
-  }
-
-  /** Apply both the category filter and the search filter. */
-  function applyFilters() {
-    const list = getSeriesList();
-    const activeChip = categoryBar.querySelector(".chip.active");
-    const category = activeChip ? activeChip.dataset.category : "All";
-    const term = (searchInput.value || "").trim().toLowerCase();
-
-    let filtered = list.slice();
-    if (category && category !== "All") {
-      filtered = filtered.filter((v) => v.category === category);
-    }
-    if (term) {
-      filtered = filtered.filter((v) => {
-        const title = i18n.pickLocalized(v, "title") || "";
-        const desc = i18n.pickLocalized(v, "description") || "";
-        const tagsText = (Array.isArray(v.tags) ? v.tags : []).join(" ");
-        return (
-          title.toLowerCase().includes(term) ||
-          desc.toLowerCase().includes(term) ||
-          tagsText.toLowerCase().includes(term) ||
-          (v.category || "").toLowerCase().includes(term) ||
-          i18n.localizeCategory(v.category || "").toLowerCase().includes(term)
-        );
-      });
-    }
-
-    if (term && category === "All") {
-      gridTitle.textContent = t("home.results", { term });
-    } else if (category === "All") {
-      gridTitle.textContent = t("home.allVideos");
-    } else {
-      gridTitle.textContent = i18n.localizeCategory(category);
-    }
-
-    renderGrid(filtered);
-  }
-
-  /** Click delegation for the grid → open player in a new tab. */
-  function bindGridEvents() {
-    grid.addEventListener("click", (e) => {
-      const card = e.target.closest(".video-card");
-      if (!card) return;
-      openSeries(card.dataset.id);
-    });
-
-    grid.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      const card = e.target.closest(".video-card");
-      if (!card) return;
-      e.preventDefault();
-      openSeries(card.dataset.id);
-    });
   }
 
   function bindSearch() {
-    let timer;
-    searchInput.addEventListener("input", () => {
-      clearTimeout(timer);
-      timer = setTimeout(applyFilters, 150);
-    });
-    searchBtn.addEventListener("click", applyFilters);
-    searchInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") applyFilters();
-    });
-  }
-
-  /* =====================================================================
-     Excel import flow
-     ---------------------------------------------------------------------
-     1. User clicks "Import" → modal opens.
-     2. User picks an .xlsx / .xls / .csv file.
-     3. SheetJS (loaded from CDN on demand) parses the workbook on the
-        client. We accept either:
-          (a) a single sheet whose columns include both series and episode
-              fields (one row per episode);
-          (b) two sheets named "series" and "episodes" linked by series_id.
-     4. Parsed series are POSTed to /api/import where the backend persists
-        them into videos.local.json. The client then reloads the library.
-     ===================================================================== */
-
-  const SHEETJS_URL =
-    "https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js";
-  let sheetJsLoading = null;
-
-  function loadSheetJs() {
-    if (window.XLSX) return Promise.resolve(window.XLSX);
-    if (sheetJsLoading) return sheetJsLoading;
-    sheetJsLoading = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = SHEETJS_URL;
-      s.async = true;
-      s.onload = () => resolve(window.XLSX);
-      s.onerror = () => reject(new Error("Failed to load xlsx parser"));
-      document.head.appendChild(s);
-    });
-    return sheetJsLoading;
-  }
-
-  /** Lower-case + trim a header so we can match user typos like "Series_ID ". */
-  function normHeader(h) {
-    return String(h || "").trim().toLowerCase().replace(/\s+/g, "_");
-  }
-
-  /** Read a row by any of the accepted header aliases. */
-  function pick(row, ...aliases) {
-    for (const a of aliases) {
-      const key = normHeader(a);
-      if (row[key] !== undefined && row[key] !== null && row[key] !== "")
-        return row[key];
+    if (searchToggleBtn) {
+      searchToggleBtn.addEventListener("click", toggleSearchPanel);
     }
-    return "";
-  }
-
-  /** Split a tag string like "都市,言情; 甜宠" into a clean array. */
-  function parseTags(value) {
-    if (value == null) return [];
-    if (Array.isArray(value)) {
-      return value
-        .map((t) => String(t || "").trim())
-        .filter((t) => t.length > 0);
-    }
-    return String(value)
-      .split(/[,;\u3001\uFF0C\uFF1B|\/]+/)
-      .map((t) => t.trim())
-      .filter((t) => t.length > 0);
-  }
-
-  /** Convert raw sheet rows (with normalised keys) into Series objects. */
-  function rowsToSeries(rows) {
-    const byId = new Map();
-    rows.forEach((row) => {
-      const seriesId = String(pick(row, "series_id", "id", "seriesid")).trim();
-      if (!seriesId) return;
-      const tagsValue = pick(row, "tags", "tag", "category", "genre");
-      const tagList = parseTags(tagsValue);
-      let s = byId.get(seriesId);
-      if (!s) {
-        s = {
-          id: seriesId,
-          title: String(
-            pick(row, "series_title", "title", "name") || seriesId
-          ).trim(),
-          // category drives the home-page filter chips. We use the first
-          // tag as the canonical category so the chips stay focused.
-          category: tagList[0] || "短剧",
-          tags: tagList.slice(),
-          description: String(pick(row, "description", "desc") || "").trim(),
-          thumbnail: String(pick(row, "thumbnail", "cover", "poster") || "")
-            .trim(),
-          episodes: [],
-        };
-        byId.set(seriesId, s);
-      } else {
-        // Allow later rows to fill in series-level metadata if the first
-        // row left it blank.
-        const tit = String(
-          pick(row, "series_title", "title", "name") || ""
-        ).trim();
-        if (tit && (!s.title || s.title === seriesId)) s.title = tit;
-        const desc = String(pick(row, "description", "desc") || "").trim();
-        if (desc && !s.description) s.description = desc;
-        const thumb = String(
-          pick(row, "thumbnail", "cover", "poster") || ""
-        ).trim();
-        if (thumb && !s.thumbnail) s.thumbnail = thumb;
-        if (tagList.length && (!s.tags || !s.tags.length)) {
-          s.tags = tagList.slice();
-          s.category = tagList[0] || s.category;
-        }
-      }
-
-      const src = String(pick(row, "src", "url", "video_url") || "").trim();
-      if (!src) return; // skip rows with no episode payload
-      const epNum = Number(pick(row, "ep", "episode", "ep_no") || 0);
-      const finalEpNum = epNum > 0 ? epNum : s.episodes.length + 1;
-      const ep = {
-        ep: finalEpNum,
-        // Episode title falls back to "第N集" so the sidebar always shows
-        // a friendly label even if the user didn't provide one.
-        title: String(
-          pick(row, "ep_title", "episode_title") || `第${finalEpNum}集`
-        ).trim(),
-        src,
-        duration: String(pick(row, "duration", "length") || "").trim(),
-        thumbnail: String(
-          pick(row, "ep_thumbnail", "episode_thumbnail") || s.thumbnail || ""
-        ).trim(),
-        views: String(pick(row, "views") || "").trim(),
-      };
-      s.episodes.push(ep);
-    });
-
-    // Sort each series' episodes by ep number for deterministic order.
-    const out = Array.from(byId.values());
-    out.forEach((s) => s.episodes.sort((a, b) => a.ep - b.ep));
-    return out.filter((s) => s.episodes.length > 0);
-  }
-
-  /** Parse an ArrayBuffer (xlsx/xls/csv) → Series[]. */
-  function parseWorkbook(buffer) {
-    const XLSX = window.XLSX;
-    const wb = XLSX.read(buffer, { type: "array" });
-    const sheetNames = wb.SheetNames || [];
-
-    // Two-sheet layout (series + episodes).
-    const seriesSheet = sheetNames.find((n) => /^series$/i.test(n));
-    const episodesSheet = sheetNames.find((n) => /^episodes?$/i.test(n));
-    if (seriesSheet && episodesSheet) {
-      const seriesRows = XLSX.utils
-        .sheet_to_json(wb.Sheets[seriesSheet], { defval: "" })
-        .map(normaliseRow);
-      const episodeRows = XLSX.utils
-        .sheet_to_json(wb.Sheets[episodesSheet], { defval: "" })
-        .map(normaliseRow);
-
-      const byId = new Map();
-      seriesRows.forEach((r) => {
-        const id = String(pick(r, "series_id", "id") || "").trim();
-        if (!id) return;
-        const tagsValue = pick(r, "tags", "tag", "category", "genre");
-        const tagList = parseTags(tagsValue);
-        byId.set(id, {
-          id,
-          title: String(pick(r, "title", "name", "series_title") || id).trim(),
-          category: tagList[0] || "短剧",
-          tags: tagList.slice(),
-          description: String(pick(r, "description", "desc") || "").trim(),
-          thumbnail: String(pick(r, "thumbnail", "cover", "poster") || "")
-            .trim(),
-          episodes: [],
-        });
+    if (searchInput) {
+      let timer;
+      searchInput.addEventListener("input", () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => renderSearchResults(searchInput.value), 150);
       });
-      episodeRows.forEach((r) => {
-        const id = String(pick(r, "series_id", "id") || "").trim();
-        const src = String(pick(r, "src", "url", "video_url") || "").trim();
-        if (!id || !src) return;
-        const s = byId.get(id);
-        if (!s) return;
-        const epNum = Number(pick(r, "ep", "episode", "ep_no") || 0);
-        const finalEpNum = epNum > 0 ? epNum : s.episodes.length + 1;
-        s.episodes.push({
-          ep: finalEpNum,
-          title: String(
-            pick(r, "ep_title", "episode_title", "title") || `第${finalEpNum}集`
-          ).trim(),
-          src,
-          duration: String(pick(r, "duration", "length") || "").trim(),
-          thumbnail: String(
-            pick(r, "ep_thumbnail", "episode_thumbnail", "thumbnail") ||
-              s.thumbnail ||
-              ""
-          ).trim(),
-          views: String(pick(r, "views") || "").trim(),
-        });
+      searchInput.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") toggleSearchPanel();
       });
-      const out = Array.from(byId.values());
-      out.forEach((s) => s.episodes.sort((a, b) => a.ep - b.ep));
-      return out.filter((s) => s.episodes.length > 0);
     }
-
-    // Single-sheet fallback: take the first sheet.
-    const first = wb.Sheets[sheetNames[0]];
-    if (!first) return [];
-    const rows = XLSX.utils
-      .sheet_to_json(first, { defval: "" })
-      .map(normaliseRow);
-    return rowsToSeries(rows);
+    if (searchBtn) {
+      searchBtn.addEventListener("click", () =>
+        renderSearchResults(searchInput && searchInput.value)
+      );
+    }
+    if (searchResults) {
+      searchResults.addEventListener("click", (e) => {
+        const row = e.target.closest(".feed-search-row");
+        if (!row) return;
+        const id = row.dataset.seriesId;
+        toggleSearchPanel();
+        scrollFeedToSeries(id);
+      });
+    }
   }
 
-  function normaliseRow(row) {
-    const out = {};
-    Object.keys(row).forEach((k) => {
-      out[normHeader(k)] = row[k];
-    });
-    return out;
-  }
-
-  /* ---------- Modal UI ---------- */
-
-  let modalEl;
-  function ensureModal() {
-    if (modalEl) return modalEl;
-    modalEl = document.createElement("div");
-    modalEl.className = "modal-backdrop";
-    modalEl.hidden = true;
-    modalEl.innerHTML = `
-      <div class="modal" role="dialog" aria-modal="true" aria-labelledby="importTitle">
-        <header class="modal-header">
-          <h2 id="importTitle">${escapeHtml(t("import.title"))}</h2>
-          <button class="modal-close" type="button" aria-label="${escapeAttr(
-            t("import.close")
-          )}">×</button>
-        </header>
-        <div class="modal-body">
-          <p class="modal-desc">${escapeHtml(t("import.desc"))}</p>
-          <ul class="modal-hints">
-            <li>${escapeHtml(t("import.hint.cols"))}</li>
-            <li>${escapeHtml(t("import.hint.multi"))}</li>
-            <li>${escapeHtml(t("import.hint.format"))}</li>
-          </ul>
-          <div class="file-drop" tabindex="0">
-            <input type="file" id="importFile" accept=".xlsx,.xls,.csv" hidden />
-            <div class="file-drop-inner">
-              <div class="file-drop-icon">📥</div>
-              <div class="file-drop-text">${escapeHtml(t("import.drop"))}</div>
-              <button type="button" class="file-pick-btn">${escapeHtml(
-                t("import.choose")
-              )}</button>
-            </div>
-          </div>
-          <div class="import-preview" hidden></div>
-          <div class="import-status" aria-live="polite"></div>
-        </div>
-        <footer class="modal-footer">
-          <button type="button" class="btn-secondary" data-action="cancel">${escapeHtml(
-            t("import.cancel")
-          )}</button>
-          <button type="button" class="btn-primary" data-action="confirm" disabled>${escapeHtml(
-            t("import.confirm")
-          )}</button>
-        </footer>
-      </div>
-    `;
-    document.body.appendChild(modalEl);
-
-    let parsedSeries = [];
-    const fileInput = modalEl.querySelector("#importFile");
-    const pickBtn = modalEl.querySelector(".file-pick-btn");
-    const drop = modalEl.querySelector(".file-drop");
-    const preview = modalEl.querySelector(".import-preview");
-    const status = modalEl.querySelector(".import-status");
-    const confirmBtn = modalEl.querySelector('[data-action="confirm"]');
-
-    function close() {
-      modalEl.hidden = true;
-      parsedSeries = [];
-      preview.hidden = true;
-      preview.innerHTML = "";
-      status.textContent = "";
-      confirmBtn.disabled = true;
-      fileInput.value = "";
-    }
-    modalEl.addEventListener("click", (e) => {
-      if (e.target === modalEl) close();
-      if (e.target.closest(".modal-close")) close();
-      if (e.target.closest('[data-action="cancel"]')) close();
-    });
-    modalEl.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") close();
-    });
-
-    pickBtn.addEventListener("click", () => fileInput.click());
-    drop.addEventListener("click", (e) => {
-      if (!e.target.closest(".file-pick-btn")) fileInput.click();
-    });
-    drop.addEventListener("dragover", (e) => {
-      e.preventDefault();
-      drop.classList.add("drag");
-    });
-    drop.addEventListener("dragleave", () => drop.classList.remove("drag"));
-    drop.addEventListener("drop", (e) => {
-      e.preventDefault();
-      drop.classList.remove("drag");
-      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (file) handleFile(file);
-    });
-    fileInput.addEventListener("change", () => {
-      const file = fileInput.files && fileInput.files[0];
-      if (file) handleFile(file);
-    });
-
-    function handleFile(file) {
-      status.textContent = t("import.status.parsing");
-      preview.hidden = true;
-      preview.innerHTML = "";
-      confirmBtn.disabled = true;
-      parsedSeries = [];
-
-      loadSheetJs()
-        .then(() => file.arrayBuffer())
-        .then((buf) => {
-          const series = parseWorkbook(buf);
-          if (!series.length) {
-            status.textContent = t("import.status.empty");
-            return;
-          }
-          parsedSeries = series;
-          renderPreview(series);
-          status.textContent = t("import.status.parsed", {
-            n: series.length,
-            e: series.reduce((acc, s) => acc + s.episodes.length, 0),
-          });
-          confirmBtn.disabled = false;
-        })
-        .catch((err) => {
-          // eslint-disable-next-line no-console
-          console.error("[import] parse failed", err);
-          status.textContent = t("import.status.error", {
-            msg: (err && err.message) || "parse error",
-          });
-        });
-    }
-
-    function renderPreview(series) {
-      preview.hidden = false;
-      preview.innerHTML = `
-        <h3 class="preview-title">${escapeHtml(t("import.preview"))}</h3>
-        <ul class="preview-list">
-          ${series
-            .map(
-              (s) => `
-            <li>
-              <strong>${escapeHtml(s.title)}</strong>
-              <span class="muted">(${escapeHtml(s.id)})</span>
-              — ${escapeHtml(t("series.epCount", { n: s.episodes.length }))}
-            </li>`
-            )
-            .join("")}
-        </ul>
-      `;
-    }
-
-    confirmBtn.addEventListener("click", () => {
-      if (!parsedSeries.length) return;
-      confirmBtn.disabled = true;
-      status.textContent = t("import.status.uploading");
-      fetch("/api/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ series: parsedSeries }),
-      })
-        .then((r) => (r.ok ? r.json() : Promise.reject(r)))
-        .then((data) => {
-          if (data && data.ok) {
-            status.textContent = t("import.status.done", {
-              n: data.added || parsedSeries.length,
-            });
-            // Reload library + stats and re-render.
-            return Promise.all([fetchLibrary(), fetchPlayStats()]).then(() => {
-              refreshAll();
-              setTimeout(close, 800);
-            });
-          }
-          throw new Error("server rejected");
-        })
-        .catch(() => {
-          status.textContent = t("import.status.uploadFailed");
-          confirmBtn.disabled = false;
-        });
-    });
-
-    return modalEl;
-  }
-
-  function openImportModal() {
-    const m = ensureModal();
-    // Refresh strings (in case language changed since last open).
-    m.querySelector("#importTitle").textContent = t("import.title");
-    m.querySelector(".modal-desc").textContent = t("import.desc");
-    const hints = m.querySelectorAll(".modal-hints li");
-    if (hints.length >= 3) {
-      hints[0].textContent = t("import.hint.cols");
-      hints[1].textContent = t("import.hint.multi");
-      hints[2].textContent = t("import.hint.format");
-    }
-    m.querySelector(".file-drop-text").textContent = t("import.drop");
-    m.querySelector(".file-pick-btn").textContent = t("import.choose");
-    m.querySelector('[data-action="cancel"]').textContent = t("import.cancel");
-    m.querySelector('[data-action="confirm"]').textContent = t(
-      "import.confirm"
+  function scrollFeedToSeries(seriesId) {
+    const target = feedEl.querySelector(
+      `.feed-item[data-series-id="${cssEscape(seriesId)}"]`
     );
-    m.querySelector(".modal-close").setAttribute(
-      "aria-label",
-      t("import.close")
-    );
-    m.hidden = false;
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  function bindImport() {
-    if (!importBtn) return;
-    importBtn.addEventListener("click", openImportModal);
+  /* ---------- Toast ---------- */
+  let toastEl;
+  let toastTimer;
+  function showToast(msg) {
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.className = "toast";
+      document.body.appendChild(toastEl);
+    }
+    toastEl.textContent = msg;
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2200);
   }
 
   /* ---------- Helpers ---------- */
@@ -854,33 +674,35 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
-  function escapeAttr(s) {
-    return escapeHtml(s);
+  function escapeAttr(s) { return escapeHtml(s); }
+  function cssEscape(s) {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
   }
 
-  /** Re-render every dynamic block when the language or library changes. */
   function refreshAll() {
-    renderHero();
-    renderCategories();
-    applyFilters();
+    renderFeed();
   }
 
   /* ---------- Init ---------- */
   document.addEventListener("DOMContentLoaded", () => {
-    renderHero();
-    renderCategories();
-    bindCategoryEvents();
-    renderGrid(getSeriesList());
-    bindGridEvents();
     bindSearch();
-    bindImport();
+    renderFeed();
 
-    // Pull imported library + real play counts in parallel, then re-render.
     Promise.all([fetchLibrary(), fetchPlayStats()]).then(() => refreshAll());
 
     document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "visible") {
-        fetchPlayStats().then(() => applyFilters());
+      // Pause everything when the tab is hidden.
+      if (document.visibilityState === "hidden") {
+        feedEl.querySelectorAll(".feed-video").forEach((v) => {
+          try { v.pause(); } catch (_) {}
+        });
+      } else {
+        const active = feedEl.querySelector(".feed-item.is-active .feed-video");
+        if (active) {
+          const p = active.play();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        }
       }
     });
 

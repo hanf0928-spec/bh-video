@@ -88,6 +88,55 @@
   const COUNTER_KEY = "bhv.adEpisodeCount";
   const LAST_EP_KEY = "bhv.adLastEpisodeKey";
 
+  /**
+   * How long (in seconds) the top/bottom banner and floating-box ads
+   * must stay on screen before the user can tap the "×" close button.
+   * Pre-roll uses its own `AD_CONFIG.preRoll.skipAfter` because it's
+   * a full-screen takeover.
+   */
+  const BANNER_SKIP_AFTER = 5;
+
+  /**
+   * Attach a 5-second countdown onto a banner/floating-box close
+   * button. For the first `seconds` seconds the button shows the
+   * remaining time (e.g. "5" → "4" → "3"), is visually locked and
+   * ignores clicks. Afterwards it switches to the regular "×" and
+   * becomes clickable; tapping it removes `wrap` from the DOM.
+   */
+  function attachCountdownClose(btn, wrap, seconds) {
+    const total = Math.max(0, Number(seconds) || 0);
+    let remaining = total;
+
+    btn.classList.add("bhv-ad-close--countdown");
+    btn.textContent = total > 0 ? String(total) : "×";
+    btn.disabled = total > 0;
+
+    let timer = null;
+    if (total > 0) {
+      timer = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+          clearInterval(timer);
+          timer = null;
+          btn.textContent = "×";
+          btn.disabled = false;
+          btn.classList.remove("bhv-ad-close--countdown");
+        } else {
+          btn.textContent = String(remaining);
+        }
+      }, 1000);
+    } else {
+      btn.classList.remove("bhv-ad-close--countdown");
+    }
+
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (btn.disabled) return;
+      if (timer) { clearInterval(timer); timer = null; }
+      try { wrap.remove(); } catch (_) {}
+    });
+  }
+
   /* ---------- Episode counter helpers ---------- */
 
   function readCounter() {
@@ -220,15 +269,12 @@
     });
     img.style.cursor = cfg.clickUrl ? "pointer" : "default";
 
+    // Close button: locked for `BANNER_SKIP_AFTER` seconds, then clickable.
     const closeBtn = createEl("button", "bhv-ad-close", {
       type: "button",
       "aria-label": "关闭广告",
     });
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      wrap.remove();
-    });
+    attachCountdownClose(closeBtn, wrap, BANNER_SKIP_AFTER);
 
     const tag = createEl("span", "bhv-ad-tag");
     tag.textContent = "广告 · Ad";
@@ -261,15 +307,12 @@
       openInNewTab(cfg.clickUrl);
     });
 
+    // Close button: locked for `BANNER_SKIP_AFTER` seconds, then clickable.
     const closeBtn = createEl("button", "bhv-ad-close", {
       type: "button",
       "aria-label": "关闭广告",
     });
-    closeBtn.textContent = "×";
-    closeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      wrap.remove();
-    });
+    attachCountdownClose(closeBtn, wrap, BANNER_SKIP_AFTER);
 
     const tag = createEl("span", "bhv-ad-tag");
     tag.textContent = "广告 · Ad";
