@@ -2,99 +2,54 @@
 <html lang="id">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title data-i18n-title="site.title.player">Pemutar — BH Video</title>
-  <link rel="stylesheet" href="styles.css?v=20261031" />
-  <script src="i18n.js?v=20261031"></script>
+  <link rel="stylesheet" href="styles.css?v=20261032" />
+  <script src="i18n.js?v=20261032"></script>
 </head>
-<body class="player-page">
-  <header class="site-header">
-    <div class="container header-inner">
-      <a href="index.html" class="logo">
-        <span class="logo-mark">▶</span>
-        <span class="logo-text">BH<span class="accent">Video</span></span>
-      </a>
-      <a href="index.html" class="back-link">
-        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" stroke-linejoin="round">
-          <line x1="19" y1="12" x2="5" y2="12"></line>
-          <polyline points="12 19 5 12 12 5"></polyline>
-        </svg>
-        <span data-i18n="nav.back">Kembali ke Beranda</span>
-      </a>
+<body class="player-page player-feed-page">
+  <!-- Floating top-left: back to home (mirrors the home-page overlay). -->
+  <a href="index.html" class="feed-top-back" aria-label="返回首页">
+    <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" stroke-linejoin="round">
+      <line x1="19" y1="12" x2="5" y2="12"></line>
+      <polyline points="12 19 5 12 12 5"></polyline>
+    </svg>
+    <span data-i18n="nav.back">返回</span>
+  </a>
 
-      <div class="lang-switcher-host" data-lang-switcher></div>
+  <!-- Floating top-right: language switcher (reuses the same host). -->
+  <div class="feed-top-lang" data-lang-switcher></div>
+
+  <!-- Full-screen vertical feed. Each snap item = ONE episode of
+       the same series; swipe up/down to switch episodes. -->
+  <main class="player-feed">
+    <div id="feed" class="feed-container" role="list"></div>
+    <div id="feedEmpty" class="feed-empty" hidden>
+      <div class="feed-empty-icon">🎬</div>
+      <div class="feed-empty-text" data-i18n="player.notFound.title">未找到视频</div>
     </div>
-  </header>
-
-  <main class="container player-layout">
-    <!-- Main player area -->
-    <section class="player-main">
-      <div class="player-shell">
-        <video id="videoPlayer" controls playsinline preload="metadata">
-          <!-- src injected by player.js -->
-          <span data-i18n="player.unsupported">Browser Anda tidak mendukung tag video.</span>
-        </video>
-      </div>
-
-      <div class="player-meta">
-        <h1 id="videoTitle" data-i18n="player.loading">Memuat…</h1>
-
-        <div class="meta-row">
-          <div class="meta-stats">
-            <span id="videoViews"></span>
-            <span class="dot">•</span>
-            <span id="videoEpCount"></span>
-            <span class="dot">•</span>
-            <span id="videoCategory"></span>
-          </div>
-
-          <div class="actions">
-            <button class="action-btn" id="likeBtn">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.28a2 2 0 0 0 2-1.7l1.38-9a2 2 0 0 0-2-2.3z"></path>
-                <line x1="7" y1="22" x2="7" y2="11"></line>
-              </svg>
-              <span data-i18n="player.like">Suka</span>
-            </button>
-            <button class="action-btn" id="shareBtn">
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="18" cy="5" r="3"></circle>
-                <circle cx="6" cy="12" r="3"></circle>
-                <circle cx="18" cy="19" r="3"></circle>
-                <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
-                <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
-              </svg>
-              <span data-i18n="player.share">Bagikan</span>
-            </button>
-          </div>
-        </div>
-
-        <div class="player-tags" id="videoTags"></div>
-
-        <p class="description" id="videoDescription"></p>
-      </div>
-    </section>
-
-    <!-- Episode list sidebar -->
-    <aside class="up-next">
-      <h2 class="section-title" id="upNextTitle" data-i18n="player.episodes">Daftar Episode</h2>
-      <div id="upNextList" class="up-next-list">
-        <!-- Filled by player.js -->
-      </div>
-    </aside>
   </main>
 
-  <footer class="site-footer">
-    <div class="container">
-      <p data-i18n="footer.player">© 2025 BH Video — Platform demo video sesuai permintaan.</p>
-    </div>
-  </footer>
+  <!-- Hidden single-video shell: kept so legacy references in ads.js /
+       error overlay don't throw. The real players live inside each
+       feed card and are managed by player.js. -->
+  <div class="player-legacy-hidden" aria-hidden="true" hidden>
+    <video id="videoPlayer" playsinline preload="none"></video>
+    <h1 id="videoTitle"></h1>
+    <span id="videoViews"></span>
+    <span id="videoEpCount"></span>
+    <span id="videoCategory"></span>
+    <div id="videoTags"></div>
+    <p id="videoDescription"></p>
+    <div id="upNextList"></div>
+    <h2 id="upNextTitle"></h2>
+    <button id="likeBtn"></button>
+    <button id="shareBtn"></button>
+  </div>
 
-  <script src="videos.js?v=20261031"></script>
-  <script src="player.js?v=20261031"></script>
-  <script src="ads.js?v=20261031"></script>
+  <script src="videos.js?v=20261032"></script>
+  <script src="player.js?v=20261032"></script>
+  <script src="ads.js?v=20261032"></script>
 </body>
 </html>

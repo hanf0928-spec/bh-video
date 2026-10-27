@@ -1924,3 +1924,182 @@ body.feed-page .bhv-ad-close {
   .feed-side-btn svg { width: 26px; height: 26px; }
   .feed-info  { right: 64px; padding: 0 14px; }
 }
+
+/* =========================================================
+   Player page — vertical feed (one card per EPISODE)
+   Reuses .feed-* layout from the home page but adds:
+   - floating top-left "back to home" chip
+   - floating top-right language switcher
+   - the <video> has native `controls`, so we need to leave
+     the bottom ~60px of each card unobstructed by the
+     feed-info / feed-progress overlays.
+   - the single hidden legacy DOM that keeps #videoPlayer et al
+     alive for ads.js and other id lookups.
+   ========================================================= */
+
+/* Hide the leftover legacy single-player skeleton that lives at
+   the bottom of player.html purely as an id anchor for other
+   modules. The elements are also `hidden` in the HTML, but belt &
+   suspenders — some older browsers ignore the attribute when a
+   display rule wins. */
+.player-legacy-hidden,
+.player-legacy-hidden[hidden] {
+  display: none !important;
+}
+
+body.player-feed-page {
+  background: #000;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Reset older two-column layout rules so they don't leak in. */
+body.player-feed-page .player-layout,
+body.player-feed-page .player-main,
+body.player-feed-page .up-next,
+body.player-feed-page .site-header,
+body.player-feed-page .site-footer {
+  display: none !important;
+}
+
+/* The feed container itself fills the whole viewport on this page. */
+body.player-feed-page .player-feed {
+  position: fixed;
+  inset: 0;
+  padding: 0;
+  margin: 0;
+}
+
+body.player-feed-page .feed-container {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* Each episode card. Mostly inherits from .feed-item, but:
+   - the <video> uses `controls` so the native progress bar is
+     drag-able. Native controls live inside the video element so
+     we don't need extra space, but we DO want to raise feed-info
+     above them, otherwise the bottom text sits ON TOP of the
+     progress bar on short devices. */
+.feed-item--player .feed-info {
+  bottom: 88px;                  /* lift above native controls bar */
+}
+
+/* The side rail stays clear of controls too. */
+.feed-item--player .feed-side {
+  bottom: 130px;
+}
+
+/* Native controls on mobile Safari float a little higher — tighten
+   the gap on small screens. */
+@media (max-width: 480px) {
+  .feed-item--player .feed-info { bottom: 78px; }
+  .feed-item--player .feed-side { bottom: 118px; }
+}
+
+/* Make sure the big center play/pause overlay doesn't eat clicks
+   meant for the native controls' bottom strip. */
+.feed-item--player .feed-playpause {
+  pointer-events: none;
+}
+.feed-item--player.is-paused .feed-playpause {
+  pointer-events: auto;
+}
+
+/* The whole video element should receive pointer events so the
+   user can tap the native play/pause control areas. The home
+   page's `cursor: pointer` makes sense (whole area is clickable
+   to open player). On the player page it's just a visual hint. */
+.feed-item--player .feed-video {
+  cursor: default;
+}
+
+/* ---- Floating top chrome (back / language) ---- */
+
+.feed-top-back,
+.feed-top-lang {
+  position: fixed;
+  top: max(14px, env(safe-area-inset-top, 0));
+  z-index: 60;
+}
+.feed-top-back {
+  left: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  color: #fff;
+  text-decoration: none;
+  font-size: 13px;
+  font-weight: 500;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-radius: 20px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  transition: background 0.2s;
+}
+.feed-top-back:hover {
+  background: rgba(0, 0, 0, 0.65);
+}
+.feed-top-lang {
+  right: 14px;
+}
+
+/* ---- Error overlay inside a card ---- */
+
+.feed-error {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff;
+  z-index: 4;
+  padding: 24px;
+  text-align: center;
+}
+.feed-error-icon {
+  font-size: 36px;
+  margin-bottom: 8px;
+}
+.feed-error-title {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+.feed-error-msg {
+  color: #bbb;
+  font-size: 13px;
+  line-height: 1.6;
+  max-width: 420px;
+}
+
+/* ---- Pre-roll / banner ads positioning on the player feed ----
+   Mirrors the body.feed-page rules used on the home page so ads
+   don't collide with native controls / feed overlays. */
+body.player-feed-page .bhv-ad-banner {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(92vw, 420px);
+  z-index: 55;
+}
+body.player-feed-page .bhv-ad-banner--top {
+  top: 60px;
+}
+body.player-feed-page .bhv-ad-banner--bottom {
+  bottom: 76px;                  /* above native controls */
+}
+body.player-feed-page .bhv-ad-banner .bhv-ad-img {
+  max-height: 72px;
+  border-radius: 10px;
+}
+body.player-feed-page .bhv-ad-tag {
+  top: 8px;
+  left: 20px;
+}
+body.player-feed-page .bhv-ad-close {
+  top: 6px;
+  right: 18px;
+}
+

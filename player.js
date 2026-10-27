@@ -1,29 +1,43 @@
 /* =========================================================
-   BH Video — Player page logic (series / episodes model)
-   - URL: player.html?id=<seriesId>&ep=<n>
-   - Loads the matching series/episode into the <video> element.
-   - Sidebar shows the episode list of THE SAME series.
-   - Per-episode play counters live under composite ids
-     "<seriesId>:ep<n>" on the backend.
-   - All user-facing strings go through window.I18N.
+   BH Video — Player page (vertical feed, one card per EPISODE)
+   -----------------------------------------------------------
+   The player page mirrors the home-page immersive feed, but every
+   snap card represents ONE EPISODE of a single series (not one
+   series). Behaviour:
+
+   - URL: player.html?id=<seriesId>&ep=<n>&t=<seconds>
+   - On boot we locate the series, render one `.feed-item` per
+     episode, and scroll-snap to the requested one.
+   - If `t=` is present, we seek the first-shown episode to that
+     time so playback resumes from where the home preview left off
+     (then strip `t=` from the URL so refresh starts clean).
+   - Swiping up/down activates the next/prev episode's card. Only
+     the active card auto-plays; the others are paused to save
+     bandwidth.
+   - Progress bar is DRAGGABLE — the <video> element in each card
+     has the native `controls` attribute enabled.
+   - When an episode ends we auto-advance by programmatically
+     scrolling to the next card. The last episode just stays on
+     its card.
+   - A floating "back to home" chip (top-left) exits to index.html.
+   - The browser's native back/forward keeps working because every
+     episode change pushes a new history entry via replaceState so
+     the URL stays shareable without flooding history.
+
+   All strings are routed through window.I18N.
    ========================================================= */
 
 (function () {
   "use strict";
 
   const Catalog = window.VideoCatalog;
+  const feedEl = document.getElementById("feed");
+  const emptyEl = document.getElementById("feedEmpty");
 
-  const videoEl = document.getElementById("videoPlayer");
-  const titleEl = document.getElementById("videoTitle");
-  const viewsEl = document.getElementById("videoViews");
-  const epCountEl = document.getElementById("videoEpCount");
-  const categoryEl = document.getElementById("videoCategory");
-  const tagsEl = document.getElementById("videoTags");
-  const descEl = document.getElementById("videoDescription");
-  const upNextList = document.getElementById("upNextList");
-  const upNextTitleEl = document.getElementById("upNextTitle");
-  const likeBtn = document.getElementById("likeBtn");
-  const shareBtn = document.getElementById("shareBtn");
+  // Hidden legacy element kept so other modules (ads overlays etc.)
+  // that look up `#videoPlayer` by id don't throw. Real playback
+  // happens inside each feed card.
+  const legacyVideoEl = document.getElementById("videoPlayer");
 
   const i18n = window.I18N || {
     t: (k) => k,
@@ -33,13 +47,119 @@
   };
   const t = (k, p) => i18n.t(k, p);
 
-  // Latest play counts. Shape: { "<seriesId>:ep<n>": { opens, plays, ends } }.
+  // Latest play counts from the backend. Shape:
+  //   { "<seriesId>:ep<n>": { opens, plays, ends } }
   let playStats = {};
-  // Track which episode key already reported a "play" event so we count at
-  // most once per navigation.
-  let playReportedFor = null;
 
-  /** Format a play count (e.g. 1.2M, 12.3K, 999). */
+  // Which episode's "play" we've already reported this session.
+  // Guards against double-counting on pause/resume.
+  const playReportedFor = new Set();
+
+  /* ---------- URL helpers ---------- */
+
+  function getRequestedId() {
+    const params = new URLSearchParams(window.location.search);
+    return params.get("id");
+  }
+  function getRequestedEp() {
+    const params = new URLSearchParams(window.location.search);
+    const n = Number(params.get("ep"));
+    return n > 0 ? n : 1;
+  }
+  /**
+   * Optional `t=<seconds>` URL param carried over from the home
+   * feed. Consumed ONCE on the first episode load, then wiped.
+   */
+  function getRequestedTime() {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("t");
+    if (raw == null || raw === "") return 0;
+    const n = Number(raw);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
+  function stripTimeFromUrl() {
+    if (!window.history || !window.history.replaceState) return;
+    try {
+      const u = new URL(window.location.href);
+      if (!u.searchParams.has("t")) return;
+      u.searchParams.delete("t");
+      window.history.replaceState(window.history.state, "", u.toString());
+    } catch (_) {}
+  }
+  /**
+   * Keep the URL in sync with whichever episode is currently
+   * active. We use `replaceState` instead of `pushState` so
+   * swiping through 50 episodes doesn't bloat browser history.
+   */
+  function syncUrlToEpisode(seriesId, epNum) {
+    if (!window.history || !window.history.replaceState) return;
+    try {
+      const u = new URL(window.location.href);
+      u.searchParams.set("id", seriesId);
+      u.searchParams.set("ep", String(epNum));
+      u.searchParams.delete("t");
+      window.history.replaceState(
+        { id: seriesId, ep: epNum },
+        "",
+        u.toString()
+      );
+    } catch (_) {}
+  }
+
+  /* ---------- API ---------- */
+
+  function fetchLibrary() {
+    return fetch("/api/library", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && Array.isArray(data.imported)) {
+          Catalog.mergeImported(data.imported);
+        }
+      })
+      .catch(() => {});
+  }
+
+  function fetchPlayStats() {
+    return fetch("/api/stats", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data) => {
+        playStats = data && typeof data === "object" ? data : {};
+      })
+      .catch(() => {
+        playStats = {};
+      });
+  }
+
+  function reportStat(seriesId, ep, event) {
+    if (!seriesId || !ep || !event) return;
+    const id = Catalog.episodeKey(seriesId, ep);
+    try {
+      fetch("/api/stats", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id, event }),
+        keepalive: true,
+      })
+        .then((r) => (r && r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && data.ok && data.stats) {
+            playStats[id] = data.stats;
+            // Refresh the side-rail counter on the matching card.
+            const card = feedEl.querySelector(
+              `.feed-item[data-series-id="${cssEscape(seriesId)}"][data-ep-num="${ep}"]`
+            );
+            if (card) {
+              const label = card.querySelector(".feed-like .feed-side-label");
+              if (label) label.textContent = formatCount(data.stats.plays || 0);
+            }
+          }
+        })
+        .catch(() => {});
+    } catch (_) {}
+  }
+
+  /* ---------- Formatting ---------- */
+
   function formatCount(n) {
     const num = Number(n) || 0;
     if (num >= 1_000_000)
@@ -60,329 +180,241 @@
     return Math.round(n);
   }
 
-  /** Pick the label to show next to the views suffix for an episode. */
-  function episodeViewsLabel(seriesId, ep) {
-    if (!ep) return "";
+  function episodePlayCount(seriesId, ep) {
     const key = Catalog.episodeKey(seriesId, ep.ep);
-    const entry = playStats && playStats[key];
-    if (entry && typeof entry.plays === "number" && entry.plays > 0) {
-      return formatCount(entry.plays);
+    const stat = playStats && playStats[key];
+    if (stat && typeof stat.plays === "number" && stat.plays > 0) {
+      return stat.plays;
     }
-    return ep.views || "0";
+    return parseViewsLabel(ep.views);
   }
 
-  /** Refresh the views line of the currently displayed episode. */
-  function refreshViewsLine() {
-    const { series, episode } = currentTarget();
-    if (!series || !episode || !viewsEl) return;
-    viewsEl.textContent = `${episodeViewsLabel(series.id, episode)} ${t(
-      "card.viewsSuffix"
-    )}`;
-  }
-
-  /** Pull the latest stats from the backend, then update the views line. */
-  function fetchPlayStats() {
-    return fetch("/api/stats", { headers: { Accept: "application/json" } })
-      .then((r) => (r.ok ? r.json() : {}))
-      .then((data) => {
-        playStats = data && typeof data === "object" ? data : {};
-        refreshViewsLine();
-        // Re-render sidebar so per-episode counts also update.
-        const { series, episode } = currentTarget();
-        if (series && episode) renderEpisodeList(series, episode.ep);
-      })
-      .catch(() => {
-        /* offline / no backend — keep static fallback */
-      });
-  }
+  /* ---------- Build one episode card ---------- */
 
   /**
-   * Try to load the merged library (built-in + user-imported) so the
-   * player works for series that were uploaded via the import dialog.
+   * Build a single feed item for ONE episode of the series.
+   * Visually identical to the home-page cards, but:
+   *  - the <video> has `controls` (progress bar is draggable)
+   *  - the right-side "episode picker" opens a sheet of SAME-series episodes
+   *  - tapping the video does NOT navigate away
    */
-  function fetchLibrary() {
-    return fetch("/api/library", { headers: { Accept: "application/json" } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data && Array.isArray(data.imported)) {
-          Catalog.mergeImported(data.imported);
-        }
-      })
-      .catch(() => {
-        /* offline / no backend — keep built-ins */
-      });
-  }
-
-  /**
-   * Fire-and-forget play-count reporter. The backend stores counts under
-   * the composite "<seriesId>:ep<n>" key.
-   */
-  function reportStat(seriesId, ep, event) {
-    if (!seriesId || !ep || !event) return;
-    const id = Catalog.episodeKey(seriesId, ep);
-    try {
-      fetch("/api/stats", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, event }),
-        keepalive: true,
-      })
-        .then((r) => (r && r.ok ? r.json() : null))
-        .then((data) => {
-          if (data && data.ok && data.stats) {
-            playStats[id] = data.stats;
-            refreshViewsLine();
-            // Update the corresponding row in the episode list as well.
-            const row = upNextList.querySelector(
-              `.up-next-item[data-ep="${ep}"] .un-meta`
-            );
-            const { series } = currentTarget();
-            if (row && series) {
-              row.textContent = `${t("series.epShort", {
-                n: ep,
-              })} • ${episodeViewsLabel(series.id, { ep, views: "" })} ${t(
-                "card.viewsSuffix"
-              )}`;
-            }
-          }
-        })
-        .catch(() => {});
-    } catch (_) {
-      /* fetch unavailable — ignore */
-    }
-  }
-
-  /* ---------- URL & current target helpers ---------- */
-
-  function getRequestedId() {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("id");
-  }
-  function getRequestedEp() {
-    const params = new URLSearchParams(window.location.search);
-    const n = Number(params.get("ep"));
-    return n > 0 ? n : 1;
-  }
-  /**
-   * Optional `t=<seconds>` URL param: when the home-page feed hands
-   * off to the player, we carry the preview's current playback time
-   * so the viewer picks up right where they left off. Consumed ONCE
-   * on the first `loadeddata` event after boot, then cleared from
-   * the URL so refresh / history navigation restart cleanly.
-   */
-  function getRequestedTime() {
-    const params = new URLSearchParams(window.location.search);
-    const raw = params.get("t");
-    if (raw == null || raw === "") return 0;
-    const n = Number(raw);
-    return isFinite(n) && n > 0 ? n : 0;
-  }
-
-  /** Resolve the series + episode currently targeted by the URL/state. */
-  function currentTarget() {
-    const seriesId = (videoEl && videoEl.dataset.seriesId) || getRequestedId();
-    const epNum = Number(videoEl && videoEl.dataset.epNum) || getRequestedEp();
-    const series = Catalog.findSeries(seriesId) || (window.VIDEOS || [])[0];
-    const episode = Catalog.findEpisode(series, epNum);
-    return { series, episode };
-  }
-
-  /* ---------- Render ---------- */
-
-  /** Render the main video and its metadata. */
-  function loadEpisode(series, episode, opts) {
-    opts = opts || {};
-    const startAt = Math.max(0, Number(opts.startAt) || 0);
-
-    if (!series || !episode) {
-      titleEl.textContent = t("player.notFound.title");
-      descEl.textContent = t("player.notFound.desc");
-      viewsEl.textContent = "";
-      categoryEl.textContent = "";
-      if (epCountEl) epCountEl.textContent = "";
-      if (tagsEl) tagsEl.innerHTML = "";
-      return;
-    }
-
+  function buildEpisodeCard(series, episode, index) {
     const localSeriesTitle = i18n.pickLocalized(series, "title");
     const localDesc = i18n.pickLocalized(series, "description");
-    const epLabel = t("series.epShort", { n: episode.ep });
-    const composedTitle = `${localSeriesTitle} — ${epLabel} ${episode.title || ""}`.trim();
+    const tags = Array.isArray(series.tags) ? series.tags.slice(0, 3) : [];
+    const epCount = (series.episodes || []).length;
+    const poster = episode.thumbnail || series.thumbnail || "";
+    const plays = formatCount(episodePlayCount(series.id, episode));
+    const epShort = t("series.epShort", { n: episode.ep });
 
-    document.title = `${composedTitle} — BH Video`;
+    const item = document.createElement("section");
+    item.className = "feed-item feed-item--player";
+    item.dataset.seriesId = series.id;
+    item.dataset.epNum = String(episode.ep);
+    item.dataset.index = String(index);
+    item.setAttribute("role", "listitem");
 
-    hidePlaybackError();
+    item.innerHTML = `
+      <!-- Native progress bar lives here because of the \`controls\` attr.
+           object-fit: contain (set via CSS .feed-item--player) ensures
+           the controls stay visible even on vertical devices. -->
+      <video class="feed-video"
+             controls
+             controlsList="nodownload noremoteplayback"
+             playsinline webkit-playsinline
+             preload="metadata"
+             poster="${escapeAttr(poster)}"
+             data-series-id="${escapeAttr(series.id)}"
+             data-ep-num="${escapeAttr(String(episode.ep))}"></video>
 
-    const sameEpisode =
-      videoEl.dataset.seriesId === series.id &&
-      Number(videoEl.dataset.epNum) === Number(episode.ep);
+      <div class="feed-gradient"></div>
 
-    if (!sameEpisode) {
-      videoEl.src = episode.src;
-      videoEl.poster = episode.thumbnail || series.thumbnail;
-      videoEl.dataset.seriesId = series.id;
-      videoEl.dataset.epNum = String(episode.ep);
-      playReportedFor = null;
-      videoEl.load();
+      <!-- Big center play/pause overlay only shown while paused.
+           Clicking it toggles playback — it does NOT navigate. -->
+      <button class="feed-playpause" type="button" aria-label="播放/暂停">
+        <svg class="icon-play" viewBox="0 0 24 24" width="56" height="56" fill="#fff">
+          <path d="M8 5v14l11-7z"></path>
+        </svg>
+      </button>
 
-      // One-shot resume handler: once the browser knows the video's
-      // metadata we can safely set currentTime. If we try to seek
-      // before `loadedmetadata` the browser throws / silently resets.
-      if (startAt > 0) {
-        const resumeOnce = () => {
-          videoEl.removeEventListener("loadedmetadata", resumeOnce);
-          try {
-            // Clamp just under duration so we never land past the end.
-            const d = Number(videoEl.duration) || 0;
-            const safe = d > 0 ? Math.min(startAt, Math.max(0, d - 0.5)) : startAt;
-            videoEl.currentTime = safe;
-          } catch (_) {
-            /* seek may fail on some streams — ignore */
-          }
-        };
-        videoEl.addEventListener("loadedmetadata", resumeOnce);
-      }
+      <!-- Right-side action rail (like / share / episode picker) -->
+      <div class="feed-side">
+        <button class="feed-side-btn feed-like" type="button" aria-label="点赞">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
+          </svg>
+          <span class="feed-side-label">${escapeHtml(plays)}</span>
+        </button>
 
-      // Pre-roll ad gate — only on fresh episode loads. If the ads module
-      // decides this is a milestone episode (every N episodes in the same
-      // browser), we pause the main video and show the ad overlay first.
-      const Ads = window.BHAds;
-      const shouldPreRoll =
-        Ads && typeof Ads.notifyEpisodeOpen === "function"
-          ? Ads.notifyEpisodeOpen(series.id, episode.ep)
-          : false;
+        <button class="feed-side-btn feed-share" type="button" aria-label="分享">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="18" cy="5" r="3"></circle>
+            <circle cx="6" cy="12" r="3"></circle>
+            <circle cx="18" cy="19" r="3"></circle>
+            <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+            <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+          </svg>
+          <span class="feed-side-label" data-i18n="player.share">分享</span>
+        </button>
 
-      const startMainVideo = () => {
-        const p = videoEl.play();
-        if (p && typeof p.catch === "function") {
-          p.catch(() => {
-            /* Autoplay may be blocked — user can press play manually. */
-          });
-        }
-      };
+        <button class="feed-side-btn feed-ep-picker" type="button" aria-label="选集">
+          <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
+               stroke="currentColor" stroke-width="2"
+               stroke-linecap="round" stroke-linejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="2"></rect>
+            <line x1="3" y1="10" x2="21" y2="10"></line>
+            <line x1="9" y1="4" x2="9" y2="20"></line>
+          </svg>
+          <span class="feed-side-label feed-ep-count">${escapeHtml(
+            t("series.epCount", { n: epCount })
+          )}</span>
+        </button>
+      </div>
 
-      if (shouldPreRoll && Ads && typeof Ads.playPreRoll === "function") {
-        // Pause main video until ad finishes/skipped.
-        try {
-          videoEl.pause();
-        } catch (_) {}
-        Ads.playPreRoll().finally(() => {
-          // Make sure we're still on the same episode (user may have
-          // navigated away while the ad was playing).
-          if (
-            videoEl.dataset.seriesId === series.id &&
-            Number(videoEl.dataset.epNum) === Number(episode.ep)
-          ) {
-            startMainVideo();
-          }
-        });
-      } else {
-        startMainVideo();
-      }
-    }
-
-    titleEl.textContent = composedTitle;
-    viewsEl.textContent = `${episodeViewsLabel(series.id, episode)} ${t(
-      "card.viewsSuffix"
-    )}`;
-    if (epCountEl) {
-      const total = Array.isArray(series.episodes) ? series.episodes.length : 0;
-      epCountEl.textContent = t("series.epCount", { n: total });
-    }
-    categoryEl.textContent = i18n.localizeCategory(series.category || "");
-    descEl.textContent = localDesc;
-
-    // Render the series-level tag chips (full list, no slicing — the
-    // player page has more horizontal room than a card).
-    if (tagsEl) {
-      const tags = Array.isArray(series.tags) ? series.tags : [];
-      tagsEl.innerHTML = tags
-        .map(
-          (tag) => `<span class="tag-chip">${escapeHtml(tag)}</span>`
-        )
-        .join("");
-    }
-  }
-
-  /** Render the sidebar with all episodes of THIS series. */
-  function renderEpisodeList(series, currentEp) {
-    if (upNextTitleEl) {
-      upNextTitleEl.textContent = t("player.episodes");
-    }
-    if (!series || !Array.isArray(series.episodes)) {
-      upNextList.innerHTML = "";
-      return;
-    }
-    upNextList.innerHTML = series.episodes
-      .map((e) => {
-        const isActive = Number(e.ep) === Number(currentEp);
-        const views = episodeViewsLabel(series.id, e);
-        const epShort = t("series.epShort", { n: e.ep });
-        const thumb = e.thumbnail || series.thumbnail || "";
-        const displayTitle = e.title || epShort;
-        return `
-        <div class="up-next-item ${isActive ? "active" : ""}"
-             data-ep="${escapeAttr(String(e.ep))}"
-             role="button" tabindex="0"
-             aria-label="${escapeAttr(
-               t("card.playEpAria", { ep: e.ep, title: displayTitle })
-             )}">
-          <div class="thumb">
-            <img src="${escapeAttr(thumb)}" alt="${escapeAttr(
-          displayTitle
-        )}" loading="lazy" />
-            <span class="duration">${escapeHtml(e.duration || "")}</span>
-            <span class="ep-badge">${escapeHtml(epShort)}</span>
-          </div>
-          <div>
-            <h3 class="un-title">${escapeHtml(displayTitle)}</h3>
-            <div class="un-meta">${escapeHtml(epShort)} • ${escapeHtml(
-          views
-        )} ${escapeHtml(t("card.viewsSuffix"))}</div>
-          </div>
+      <!-- Bottom info: episode indicator, title, tags, description. -->
+      <div class="feed-info">
+        <div class="feed-ep-indicator">
+          <span class="feed-ep-chip">${escapeHtml(epShort)}</span>
+          <span class="feed-ep-sep">·</span>
+          <span class="feed-ep-total">${escapeHtml(
+            t("series.epCount", { n: epCount })
+          )}</span>
         </div>
-      `;
-      })
-      .join("");
+        <h2 class="feed-title">${escapeHtml(localSeriesTitle)}${
+      episode.title ? " — " + escapeHtml(episode.title) : ""
+    }</h2>
+        ${
+          tags.length
+            ? `<div class="feed-tags">${tags
+                .map((tag) => `<span class="feed-tag">${escapeHtml(tag)}</span>`)
+                .join("")}</div>`
+            : ""
+        }
+        <p class="feed-desc">${escapeHtml(localDesc)}</p>
+      </div>
+    `;
+    return item;
   }
 
-  function bindEpisodeEvents() {
-    upNextList.addEventListener("click", (e) => {
-      const item = e.target.closest(".up-next-item");
-      if (!item) return;
-      navigateToEp(Number(item.dataset.ep));
+  /* ---------- Render the whole feed ---------- */
+
+  function renderFeed(series, initialEp, initialStartAt) {
+    if (!series || !Array.isArray(series.episodes) || !series.episodes.length) {
+      feedEl.innerHTML = "";
+      if (emptyEl) emptyEl.hidden = false;
+      return null;
+    }
+    if (emptyEl) emptyEl.hidden = true;
+
+    document.title = `${i18n.pickLocalized(series, "title")} — BH Video`;
+
+    const frag = document.createDocumentFragment();
+    series.episodes.forEach((ep, i) => {
+      frag.appendChild(buildEpisodeCard(series, ep, i));
+    });
+    feedEl.innerHTML = "";
+    feedEl.appendChild(frag);
+
+    // Wire up each card.
+    feedEl.querySelectorAll(".feed-item").forEach((item) => bindCard(item));
+
+    // Snap to the requested episode BEFORE enabling the observer so
+    // the automatic "activate" fires on the right card.
+    const target = feedEl.querySelector(
+      `.feed-item[data-ep-num="${CSS.escape(String(initialEp))}"]`
+    );
+    if (target) {
+      // `scrollTo` with `instant` bypasses the smooth-scroll CSS so
+      // boot doesn't visibly animate from the first episode down.
+      try {
+        target.scrollIntoView({ block: "start", behavior: "auto" });
+      } catch (_) {
+        feedEl.scrollTop = target.offsetTop;
+      }
+      // Remember the one-shot resume time so the observer applies it
+      // when it activates this card.
+      if (initialStartAt > 0) {
+        target.dataset.pendingStart = String(initialStartAt);
+      }
+    }
+
+    observeFeedItems();
+
+    // Fallback: if IntersectionObserver fires late, kick off the
+    // target card manually.
+    requestAnimationFrame(() => {
+      const first = feedEl.querySelector(".feed-item.is-active");
+      if (!first && target) activateCard(target);
     });
 
-    upNextList.addEventListener("keydown", (e) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      const item = e.target.closest(".up-next-item");
-      if (!item) return;
-      e.preventDefault();
-      navigateToEp(Number(item.dataset.ep));
-    });
+    return target;
   }
 
-  /** Switch to another episode in the SAME series within this tab. */
-  function navigateToEp(epNum) {
-    const seriesId = videoEl.dataset.seriesId || getRequestedId();
+  /* ---------- Per-card behaviour ---------- */
+
+  function bindCard(item) {
+    const seriesId = item.dataset.seriesId;
+    const epNum = Number(item.dataset.epNum);
     const series = Catalog.findSeries(seriesId);
-    const episode = Catalog.findEpisode(series, epNum);
-    if (!series || !episode) return;
+    if (!series) return;
 
-    const newUrl = `player.html?id=${encodeURIComponent(
-      series.id
-    )}&ep=${encodeURIComponent(episode.ep)}`;
-    window.history.pushState({ id: series.id, ep: episode.ep }, "", newUrl);
+    const video = item.querySelector(".feed-video");
+    const playBtn = item.querySelector(".feed-playpause");
+    const likeBtn = item.querySelector(".feed-like");
+    const shareBtn = item.querySelector(".feed-share");
+    const epPicker = item.querySelector(".feed-ep-picker");
 
-    loadEpisode(series, episode);
-    renderEpisodeList(series, episode.ep);
-    reportStat(series.id, episode.ep, "open");
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
+    // The big center overlay toggles play/pause (doesn't navigate).
+    playBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (video.paused) {
+        const p = video.play();
+        if (p && typeof p.catch === "function") p.catch(() => {});
+      } else {
+        video.pause();
+      }
+    });
 
-  /** Bind the like / share buttons. */
-  function bindActions() {
-    likeBtn.addEventListener("click", () => {
+    // Pause/play icon class toggles.
+    video.addEventListener("play", () => {
+      item.classList.remove("is-paused");
+      const key = Catalog.episodeKey(seriesId, epNum);
+      if (!playReportedFor.has(key)) {
+        playReportedFor.add(key);
+        reportStat(seriesId, epNum, "play");
+      }
+    });
+    video.addEventListener("pause", () => {
+      if (!video.ended) item.classList.add("is-paused");
+    });
+
+    // Episode ended → auto-advance to the next card.
+    video.addEventListener("ended", () => {
+      reportStat(seriesId, epNum, "ended");
+      const next = item.nextElementSibling;
+      if (next && next.classList.contains("feed-item")) {
+        next.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        // Last episode — show the center play icon as a replay cue.
+        item.classList.add("is-paused");
+      }
+    });
+
+    // Playback errors render a lightweight overlay inside the card.
+    video.addEventListener("error", () => {
+      const err = video.error;
+      const msg =
+        (err && t("error.code." + err.code)) || t("error.generic");
+      showCardError(item, msg);
+    });
+
+    // Like toggle.
+    likeBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
       likeBtn.classList.toggle("liked");
       showToast(
         likeBtn.classList.contains("liked")
@@ -391,59 +423,218 @@
       );
     });
 
-    shareBtn.addEventListener("click", async () => {
-      const shareUrl = window.location.href;
+    // Share the direct deep-link to this episode.
+    shareBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const url =
+        location.origin +
+        location.pathname +
+        "?id=" +
+        encodeURIComponent(seriesId) +
+        "&ep=" +
+        encodeURIComponent(epNum);
       try {
         if (navigator.share) {
-          await navigator.share({ title: document.title, url: shareUrl });
+          await navigator.share({ title: document.title, url });
         } else if (navigator.clipboard) {
-          await navigator.clipboard.writeText(shareUrl);
+          await navigator.clipboard.writeText(url);
           showToast(t("toast.linkCopied"));
         } else {
-          showToast(shareUrl);
+          showToast(url);
         }
       } catch (_) {
-        /* User cancelled — ignore */
+        /* user cancelled */
       }
     });
-  }
 
-  /** Auto-play the next episode of the same series when the current ends. */
-  function bindAutoPlayNext() {
-    videoEl.addEventListener("ended", () => {
-      const { series, episode } = currentTarget();
-      if (!series || !episode) return;
-      reportStat(series.id, episode.ep, "ended");
-      const idx = series.episodes.findIndex((e) => e.ep === episode.ep);
-      if (idx === -1) return;
-      const next = series.episodes[idx + 1];
-      if (next) navigateToEp(next.ep);
+    // Episode picker sheet.
+    epPicker.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openEpisodePicker(series, epNum);
     });
   }
 
-  /** Report the first real "play" for whichever episode is currently loaded. */
-  function bindFirstPlayReporter() {
-    videoEl.addEventListener("play", () => {
-      const seriesId = videoEl.dataset.seriesId || getRequestedId();
-      const ep = Number(videoEl.dataset.epNum) || getRequestedEp();
-      if (!seriesId || !ep) return;
-      const key = Catalog.episodeKey(seriesId, ep);
-      if (playReportedFor === key) return;
-      playReportedFor = key;
-      reportStat(seriesId, ep, "play");
-    });
+  function showCardError(item, message) {
+    let overlay = item.querySelector(".feed-error");
+    if (!overlay) {
+      overlay = document.createElement("div");
+      overlay.className = "feed-error";
+      item.appendChild(overlay);
+    }
+    overlay.innerHTML = `
+      <div class="feed-error-inner">
+        <div class="feed-error-icon">⚠️</div>
+        <div class="feed-error-title">${escapeHtml(t("error.title"))}</div>
+        <div class="feed-error-msg">${escapeHtml(message)}</div>
+      </div>
+    `;
   }
 
-  /** Handle browser back/forward buttons. */
-  function bindHistory() {
-    window.addEventListener("popstate", () => {
-      const { series, episode } = currentTarget();
-      loadEpisode(series, episode);
-      if (series && episode) renderEpisodeList(series, episode.ep);
-    });
+  /* ---------- Visibility orchestration ---------- */
+
+  let feedObserver = null;
+
+  function observeFeedItems() {
+    if (feedObserver) {
+      try { feedObserver.disconnect(); } catch (_) {}
+    }
+    feedObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting && entry.intersectionRatio > 0.6) {
+            activateCard(entry.target);
+          } else {
+            deactivateCard(entry.target);
+          }
+        });
+      },
+      { root: feedEl, threshold: [0, 0.6, 1] }
+    );
+    feedEl.querySelectorAll(".feed-item").forEach((item) =>
+      feedObserver.observe(item)
+    );
   }
 
-  /* ---------- Toast & error overlay ---------- */
+  function activateCard(item) {
+    if (item.classList.contains("is-active")) return;
+
+    // Deactivate everyone else first.
+    feedEl.querySelectorAll(".feed-item.is-active").forEach((other) => {
+      if (other !== item) deactivateCard(other);
+    });
+
+    item.classList.add("is-active");
+
+    const seriesId = item.dataset.seriesId;
+    const epNum = Number(item.dataset.epNum);
+    const series = Catalog.findSeries(seriesId);
+    const episode = Catalog.findEpisode(series, epNum);
+    if (!series || !episode) return;
+
+    const video = item.querySelector(".feed-video");
+
+    // Lazily attach the real source the first time we activate.
+    if (!video.src) {
+      video.src = episode.src;
+      video.load();
+    }
+
+    // Keep the shareable URL in sync with the newly active episode.
+    syncUrlToEpisode(seriesId, epNum);
+    reportStat(seriesId, epNum, "open");
+
+    // One-shot resume from the home-feed hand-off: `?t=<seconds>`.
+    const pendingStart = Number(item.dataset.pendingStart) || 0;
+    if (pendingStart > 0) {
+      delete item.dataset.pendingStart;
+      const seekOnce = () => {
+        video.removeEventListener("loadedmetadata", seekOnce);
+        try {
+          const d = Number(video.duration) || 0;
+          const safe = d > 0 ? Math.min(pendingStart, Math.max(0, d - 0.5)) : pendingStart;
+          video.currentTime = safe;
+        } catch (_) {}
+      };
+      if (video.readyState >= 1) seekOnce();
+      else video.addEventListener("loadedmetadata", seekOnce);
+    }
+
+    // Pre-roll ad gate — same per-N-episodes rule as the home page.
+    const Ads = window.BHAds;
+    const shouldPreRoll =
+      Ads && typeof Ads.notifyEpisodeOpen === "function"
+        ? Ads.notifyEpisodeOpen(seriesId, epNum)
+        : false;
+
+    const startPlay = () => {
+      if (!item.classList.contains("is-active")) return;
+      const p = video.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => item.classList.add("is-paused"));
+      }
+    };
+
+    if (shouldPreRoll && Ads && typeof Ads.playPreRoll === "function") {
+      try { video.pause(); } catch (_) {}
+      Ads.playPreRoll().finally(() => {
+        if (
+          item.classList.contains("is-active") &&
+          video.dataset.epNum === String(epNum)
+        ) {
+          startPlay();
+        }
+      });
+    } else {
+      startPlay();
+    }
+  }
+
+  function deactivateCard(item) {
+    item.classList.remove("is-active");
+    const video = item.querySelector(".feed-video");
+    if (video) {
+      try { video.pause(); } catch (_) {}
+    }
+  }
+
+  /* ---------- Episode picker sheet ---------- */
+
+  let epSheetEl = null;
+  function openEpisodePicker(series, currentEp) {
+    if (epSheetEl) epSheetEl.remove();
+    epSheetEl = document.createElement("div");
+    epSheetEl.className = "feed-ep-sheet";
+    epSheetEl.innerHTML = `
+      <div class="feed-ep-sheet-inner">
+        <div class="feed-ep-sheet-head">
+          <h3>${escapeHtml(i18n.pickLocalized(series, "title"))}</h3>
+          <button class="feed-ep-sheet-close" type="button" aria-label="关闭">×</button>
+        </div>
+        <div class="feed-ep-sheet-grid">
+          ${(series.episodes || [])
+            .map((e) => {
+              const isActive = Number(e.ep) === Number(currentEp);
+              return `<button class="feed-ep-cell ${
+                isActive ? "active" : ""
+              }" data-ep="${escapeAttr(String(e.ep))}">${escapeHtml(
+                t("series.epShort", { n: e.ep })
+              )}</button>`;
+            })
+            .join("")}
+        </div>
+      </div>
+    `;
+    document.body.appendChild(epSheetEl);
+    requestAnimationFrame(() => epSheetEl.classList.add("open"));
+
+    epSheetEl.addEventListener("click", (e) => {
+      if (e.target === epSheetEl || e.target.closest(".feed-ep-sheet-close")) {
+        closeEpisodePicker();
+        return;
+      }
+      const cell = e.target.closest(".feed-ep-cell");
+      if (!cell) return;
+      const ep = Number(cell.dataset.ep);
+      closeEpisodePicker();
+      scrollFeedToEp(ep);
+    });
+  }
+  function closeEpisodePicker() {
+    if (!epSheetEl) return;
+    const el = epSheetEl;
+    epSheetEl = null;
+    el.classList.remove("open");
+    setTimeout(() => { try { el.remove(); } catch (_) {} }, 260);
+  }
+  function scrollFeedToEp(epNum) {
+    const target = feedEl.querySelector(
+      `.feed-item[data-ep-num="${CSS.escape(String(epNum))}"]`
+    );
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  /* ---------- Toast ---------- */
   let toastEl;
   let toastTimer;
   function showToast(msg) {
@@ -458,46 +649,6 @@
     toastTimer = setTimeout(() => toastEl.classList.remove("show"), 2200);
   }
 
-  let errorOverlay;
-  function showPlaybackError(message) {
-    const shell = videoEl.parentElement;
-    if (!shell) return;
-    if (!errorOverlay) {
-      errorOverlay = document.createElement("div");
-      errorOverlay.style.cssText =
-        "position:absolute;inset:0;display:grid;place-items:center;text-align:center;" +
-        "padding:24px;color:#fff;background:rgba(0,0,0,0.78);font-size:14px;" +
-        "line-height:1.6;border-radius:inherit;z-index:5;";
-      shell.style.position = "relative";
-      shell.appendChild(errorOverlay);
-    }
-    errorOverlay.innerHTML = `
-      <div>
-        <div style="font-size:32px;margin-bottom:8px;">⚠️</div>
-        <div style="font-weight:600;margin-bottom:4px;">${escapeHtml(
-          t("error.title")
-        )}</div>
-        <div style="color:#bbb;max-width:480px;">${escapeHtml(message)}</div>
-      </div>`;
-    errorOverlay.style.display = "grid";
-  }
-  function hidePlaybackError() {
-    if (errorOverlay) errorOverlay.style.display = "none";
-  }
-
-  function bindPlaybackErrors() {
-    videoEl.addEventListener("error", () => {
-      const err = videoEl.error;
-      const msg =
-        (err && t("error.code." + err.code)) || t("error.generic");
-      showPlaybackError(msg);
-    });
-    videoEl.addEventListener("stalled", () => {
-      // eslint-disable-next-line no-console
-      console.warn("[player] network stalled while loading", videoEl.currentSrc);
-    });
-  }
-
   /* ---------- Helpers ---------- */
   function escapeHtml(s) {
     return String(s == null ? "" : s)
@@ -507,59 +658,67 @@
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
   }
-  function escapeAttr(s) {
-    return escapeHtml(s);
+  function escapeAttr(s) { return escapeHtml(s); }
+  function cssEscape(s) {
+    if (window.CSS && window.CSS.escape) return window.CSS.escape(s);
+    return String(s).replace(/[^a-zA-Z0-9_-]/g, (c) => "\\" + c);
   }
 
   /* ---------- Init ---------- */
+
   function boot() {
     const seriesId = getRequestedId();
     const epNum = getRequestedEp();
     const startAt = getRequestedTime();
-    const series = Catalog.findSeries(seriesId) || (window.VIDEOS || [])[0];
-    const episode = Catalog.findEpisode(series, epNum);
+    const series =
+      Catalog.findSeries(seriesId) || (window.VIDEOS || [])[0] || null;
 
-    bindPlaybackErrors();
-    loadEpisode(series, episode, { startAt });
+    renderFeed(series, epNum, startAt);
 
-    // Strip `t=` from the URL after we've consumed it so later
-    // refreshes / history navigation don't keep rewinding to this
-    // same timestamp. The rest of the URL (id, ep) stays intact.
-    if (startAt > 0 && window.history && window.history.replaceState) {
-      try {
-        const u = new URL(window.location.href);
-        u.searchParams.delete("t");
-        window.history.replaceState(window.history.state, "", u.toString());
-      } catch (_) {}
-    }
+    // Consume `?t=` so refreshes start clean (we've already stashed
+    // the value in the card's dataset for activateCard to apply).
+    stripTimeFromUrl();
 
-    if (series && episode) renderEpisodeList(series, episode.ep);
-    bindEpisodeEvents();
-    bindActions();
-    bindAutoPlayNext();
-    bindFirstPlayReporter();
-    bindHistory();
+    // Pause everything when tab goes to background; resume active card
+    // when it comes back.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        feedEl.querySelectorAll(".feed-video").forEach((v) => {
+          try { v.pause(); } catch (_) {}
+        });
+      } else {
+        const active = feedEl.querySelector(".feed-item.is-active .feed-video");
+        if (active) {
+          const p = active.play();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        }
+      }
+    });
 
-    fetchPlayStats();
+    // Browser back/forward keeps the URL state in sync — but since we
+    // use replaceState for every episode change we just need to react
+    // to the user hitting back from outside the feed.
+    window.addEventListener("popstate", () => {
+      const ep = getRequestedEp();
+      scrollFeedToEp(ep);
+    });
 
-    if (series && episode) reportStat(series.id, episode.ep, "open");
-
+    // Language switch → re-render whole feed, keeping current episode
+    // and current playback time.
     if (window.I18N && typeof window.I18N.onChange === "function") {
       window.I18N.onChange(() => {
-        const { series: s2, episode: e2 } = currentTarget();
-        // Preserve the viewer's current position across language
-        // changes so switching UI language mid-episode doesn't
-        // rewind the video.
-        const keepAt = Number(videoEl && videoEl.currentTime) || 0;
-        loadEpisode(s2, e2, { startAt: keepAt });
-        if (s2 && e2) renderEpisodeList(s2, e2.ep);
+        const active = feedEl.querySelector(".feed-item.is-active");
+        const curEp = active ? Number(active.dataset.epNum) : epNum;
+        const vid = active && active.querySelector(".feed-video");
+        const keepAt = vid ? Number(vid.currentTime) || 0 : 0;
+        renderFeed(series, curEp, keepAt);
       });
     }
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    // Try to load the imported library first so links like
-    // player.html?id=imported-series&ep=1 also work after a hard refresh.
-    fetchLibrary().then(boot);
+    // Fetch library first so imported-but-not-built-in series work on
+    // hard refresh, then fetch stats (best effort), then boot.
+    Promise.all([fetchLibrary(), fetchPlayStats()]).then(boot);
   });
 })();
