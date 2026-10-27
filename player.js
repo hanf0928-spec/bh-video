@@ -163,6 +163,20 @@
     const n = Number(params.get("ep"));
     return n > 0 ? n : 1;
   }
+  /**
+   * Optional `t=<seconds>` URL param: when the home-page feed hands
+   * off to the player, we carry the preview's current playback time
+   * so the viewer picks up right where they left off. Consumed ONCE
+   * on the first `loadeddata` event after boot, then cleared from
+   * the URL so refresh / history navigation restart cleanly.
+   */
+  function getRequestedTime() {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get("t");
+    if (raw == null || raw === "") return 0;
+    const n = Number(raw);
+    return isFinite(n) && n > 0 ? n : 0;
+  }
 
   /** Resolve the series + episode currently targeted by the URL/state. */
   function currentTarget() {
@@ -176,7 +190,10 @@
   /* ---------- Render ---------- */
 
   /** Render the main video and its metadata. */
-  function loadEpisode(series, episode) {
+  function loadEpisode(series, episode, opts) {
+    opts = opts || {};
+    const startAt = Math.max(0, Number(opts.startAt) || 0);
+
     if (!series || !episode) {
       titleEl.textContent = t("player.notFound.title");
       descEl.textContent = t("player.notFound.desc");
@@ -207,6 +224,24 @@
       videoEl.dataset.epNum = String(episode.ep);
       playReportedFor = null;
       videoEl.load();
+
+      // One-shot resume handler: once the browser knows the video's
+      // metadata we can safely set currentTime. If we try to seek
+      // before `loadedmetadata` the browser throws / silently resets.
+      if (startAt > 0) {
+        const resumeOnce = () => {
+          videoEl.removeEventListener("loadedmetadata", resumeOnce);
+          try {
+            // Clamp just under duration so we never land past the end.
+            const d = Number(videoEl.duration) || 0;
+            const safe = d > 0 ? Math.min(startAt, Math.max(0, d - 0.5)) : startAt;
+            videoEl.currentTime = safe;
+          } catch (_) {
+            /* seek may fail on some streams — ignore */
+          }
+        };
+        videoEl.addEventListener("loadedmetadata", resumeOnce);
+      }
 
       // Pre-roll ad gate — only on fresh episode loads. If the ads module
       // decides this is a milestone episode (every N episodes in the same
@@ -480,11 +515,24 @@
   function boot() {
     const seriesId = getRequestedId();
     const epNum = getRequestedEp();
+    const startAt = getRequestedTime();
     const series = Catalog.findSeries(seriesId) || (window.VIDEOS || [])[0];
     const episode = Catalog.findEpisode(series, epNum);
 
     bindPlaybackErrors();
-    loadEpisode(series, episode);
+    loadEpisode(series, episode, { startAt });
+
+    // Strip `t=` from the URL after we've consumed it so later
+    // refreshes / history navigation don't keep rewinding to this
+    // same timestamp. The rest of the URL (id, ep) stays intact.
+    if (startAt > 0 && window.history && window.history.replaceState) {
+      try {
+        const u = new URL(window.location.href);
+        u.searchParams.delete("t");
+        window.history.replaceState(window.history.state, "", u.toString());
+      } catch (_) {}
+    }
+
     if (series && episode) renderEpisodeList(series, episode.ep);
     bindEpisodeEvents();
     bindActions();
@@ -499,7 +547,11 @@
     if (window.I18N && typeof window.I18N.onChange === "function") {
       window.I18N.onChange(() => {
         const { series: s2, episode: e2 } = currentTarget();
-        loadEpisode(s2, e2);
+        // Preserve the viewer's current position across language
+        // changes so switching UI language mid-episode doesn't
+        // rewind the video.
+        const keepAt = Number(videoEl && videoEl.currentTime) || 0;
+        loadEpisode(s2, e2, { startAt: keepAt });
         if (s2 && e2) renderEpisodeList(s2, e2.ep);
       });
     }

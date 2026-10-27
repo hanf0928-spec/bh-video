@@ -1782,7 +1782,13 @@ body.feed-page {
   transition: width 180ms linear;
 }
 
-/* ---- Empty state ---- */
+/* ---- Empty state ----
+ * `.feed-empty` has `display: grid` so it can center its icon+text,
+ * but that would otherwise override the native `[hidden]` behaviour
+ * (`display: none`). We explicitly re-assert `display: none` when
+ * the element carries the `hidden` attribute so renderFeed() can
+ * reliably toggle visibility by setting `.hidden = true/false`.
+ */
 .feed-empty {
   position: fixed;
   inset: 0;
@@ -1792,6 +1798,9 @@ body.feed-page {
   color: var(--text-dim);
   z-index: 10;
   pointer-events: none;
+}
+.feed-empty[hidden] {
+  display: none !important;
 }
 .feed-empty-icon {
   font-size: 48px;

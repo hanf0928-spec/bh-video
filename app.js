@@ -356,7 +356,63 @@
     }
   }
 
-  /** Bind one feed item's internal events (play/pause, next-ep, side rail…). */
+  /**
+   * Jump from the home feed to the full player page.
+   * Carries three pieces of state in the URL so playback can continue
+   * seamlessly:
+   *   id = series id
+   *   ep = episode number
+   *   t  = current playback time (seconds) within that episode
+   * When `t >= duration - 0.5` (meaning the preview already finished),
+   * we instead redirect to the NEXT episode starting at t=0, so the
+   * player page naturally resumes with the following episode of the
+   * same series.
+   */
+  function openPlayerForItem(item) {
+    const seriesId = item.dataset.seriesId;
+    const series = Catalog.findSeries(seriesId);
+    if (!series) return;
+    const video = item.querySelector(".feed-video");
+    if (!video) return;
+
+    const curEp = Number(video.dataset.epNum) || 1;
+    const currentTime = Number(video.currentTime) || 0;
+    const duration = Number(video.duration) || 0;
+
+    let targetEp = curEp;
+    let targetTime = currentTime;
+
+    // If the current preview episode has already finished, roll over
+    // to the next episode (if any) so the player page picks up where
+    // the feed left off.
+    const finished = duration > 0 && currentTime >= duration - 0.5;
+    if (finished) {
+      const idx = (series.episodes || []).findIndex(
+        (e) => Number(e.ep) === curEp
+      );
+      const next = idx >= 0 ? series.episodes[idx + 1] : null;
+      if (next) {
+        targetEp = next.ep;
+        targetTime = 0;
+      } else {
+        // Last episode of the series — restart from the beginning of
+        // the current episode on the player page.
+        targetTime = 0;
+      }
+    }
+
+    // Pause the preview before navigating so the audio doesn't double
+    // up if the browser caches the home page.
+    try { video.pause(); } catch (_) {}
+
+    const url =
+      "player.html?id=" + encodeURIComponent(series.id) +
+      "&ep=" + encodeURIComponent(targetEp) +
+      "&t=" + encodeURIComponent(Math.max(0, Math.floor(targetTime)));
+    window.location.href = url;
+  }
+
+  /** Bind one feed item's internal events (tap-to-open-player, side rail…). */
   function bindFeedItem(item) {
     const seriesId = item.dataset.seriesId;
     const series = Catalog.findSeries(seriesId);
@@ -368,26 +424,23 @@
     const epPicker = item.querySelector(".feed-ep-picker");
     const progress = item.querySelector("[data-progress]");
 
-    // Tap on the video area toggles play/pause.
-    video.addEventListener("click", () => togglePlay(item));
+    // Tap on the video area → jump to the full player page.
+    // The home feed is a preview only; actual playback (with a
+    // scrubbable progress bar, like/share, episode auto-advance,
+    // etc.) happens on player.html.
+    video.addEventListener("click", () => openPlayerForItem(item));
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      togglePlay(item);
+      openPlayerForItem(item);
     });
 
-    // When the current episode ends → auto-advance to the next one.
+    // When the preview episode ends → jump to the player page so the
+    // viewer continues watching. If it was the FIRST episode of a
+    // series the player page will naturally take over at episode 2
+    // (handled by openPlayerForItem's roll-over logic).
     video.addEventListener("ended", () => {
       reportStat(series.id, Number(video.dataset.epNum) || 1, "ended");
-      const idx = series.episodes.findIndex(
-        (e) => Number(e.ep) === Number(video.dataset.epNum)
-      );
-      const next = idx >= 0 ? series.episodes[idx + 1] : null;
-      if (next) {
-        loadEpisodeInto(item, series, next.ep);
-      } else {
-        // End of the whole series — show replay icon.
-        item.classList.add("is-paused");
-      }
+      openPlayerForItem(item);
     });
 
     // Report "play" at most once per episode.
@@ -433,17 +486,6 @@
       e.stopPropagation();
       openEpisodePicker(item, series);
     });
-  }
-
-  function togglePlay(item) {
-    const video = item.querySelector(".feed-video");
-    if (!video) return;
-    if (video.paused) {
-      const p = video.play();
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    } else {
-      video.pause();
-    }
   }
 
   /* ---------- Visibility / scroll-snap orchestration ---------- */
@@ -687,8 +729,11 @@
   /* ---------- Init ---------- */
   document.addEventListener("DOMContentLoaded", () => {
     bindSearch();
-    renderFeed();
 
+    // Wait for the library (and best-effort stats) to resolve before
+    // the first render — otherwise we'd briefly flash the empty-state
+    // overlay because BUILTIN_SERIES is empty and the real catalog
+    // lives behind /api/library.
     Promise.all([fetchLibrary(), fetchPlayStats()]).then(() => refreshAll());
 
     document.addEventListener("visibilitychange", () => {
