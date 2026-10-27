@@ -200,21 +200,34 @@ button {
   isolation: isolate;
 }
 
-.hero-bg {
+/* ---- Rotating hero carousel ----
+ * Each series inside the hero is wrapped in a `.hero-slide`.
+ * Slides sit stacked on top of each other and fade in via opacity.
+ * The first slide (`.active`) also keeps `position: relative` on its
+ * content so the container has a real height — the rest float on top
+ * absolutely without affecting layout.
+ */
+.hero-slide {
   position: absolute;
   inset: 0;
-  background-size: cover;
-  background-position: center;
-  transform: scale(1.02);
-  transition: transform 600ms ease;
-  z-index: -2;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 600ms ease;
+  pointer-events: none;
+  isolation: isolate;
 }
 
-.hero:hover .hero-bg {
-  transform: scale(1.06);
+.hero-slide.active {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  position: relative; /* makes the hero container get a real height */
 }
 
-.hero::before {
+/* Dark gradient overlay lives on the slide so each background gets its
+ * own fade, instead of a single ::before on the hero container (which
+ * would also sit on top of other slide backgrounds during a crossfade). */
+.hero-slide::before {
   content: "";
   position: absolute;
   inset: 0;
@@ -224,8 +237,31 @@ button {
     rgba(15, 15, 18, 0.65) 45%,
     rgba(15, 15, 18, 0.1) 100%
   );
+  z-index: 0;
+}
+
+.hero-slide .hero-content {
+  position: relative;
+  z-index: 1;
+}
+
+.hero-bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  transform: scale(1.02);
+  transition: transform 600ms ease;
   z-index: -1;
 }
+
+.hero:hover .hero-bg {
+  transform: scale(1.06);
+}
+
+/* The container-level ::before overlay is no longer needed — each
+ * .hero-slide carries its own gradient now. Keep an empty rule here
+ * (removed) so legacy references don't accidentally match. */
 
 .hero-content {
   padding: 60px 48px;
@@ -273,6 +309,37 @@ button {
 
 .hero .play-now:hover {
   transform: translateY(-2px);
+}
+
+/* ---- Carousel dot indicators ---- */
+.hero-dots {
+  position: absolute;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 3;
+}
+
+.hero-dot {
+  width: 24px;
+  height: 4px;
+  border: none;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.35);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--transition), width var(--transition);
+}
+
+.hero-dot:hover {
+  background: rgba(255, 255, 255, 0.6);
+}
+
+.hero-dot.active {
+  background: var(--accent);
+  width: 36px;
 }
 
 /* ---------- Category bar ---------- */

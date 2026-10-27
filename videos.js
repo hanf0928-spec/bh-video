@@ -37,108 +37,12 @@
 (function () {
   "use strict";
 
-  const BUILTIN_SERIES = [
-    {
-      id: "bunny-saga",
-      title: "兔兔传奇",
-      description:
-        "一只可爱的大兔子要面对三个由飞鼠领头的小恶霸。它们一心想破坏它的好心情，于是一场温馨又欢乐的反击悄然展开。",
-      tags: ["动画", "喜剧", "短剧"],
-      category: "动画",
-      thumbnail: "https://media.w3.org/2010/05/bunny/poster.png",
-      episodes: [
-        {
-          ep: 1,
-          title: "第一集 初遇恶霸",
-          src: "https://media.w3.org/2010/05/bunny/trailer.mp4",
-          duration: "0:33",
-          thumbnail: "https://media.w3.org/2010/05/bunny/poster.png",
-          views: "1.2M",
-        },
-        {
-          ep: 2,
-          title: "第二集 反击之路",
-          src: "https://media.w3.org/2010/05/bunny/movie.mp4",
-          duration: "1:00",
-          thumbnail: "https://media.w3.org/2010/05/bunny/poster.png",
-          views: "980K",
-        },
-        {
-          ep: 3,
-          title: "第三集 完整版",
-          src: "https://download.blender.org/peach/bigbuckbunny_movies/BigBuckBunny_320x180.mp4",
-          duration: "9:56",
-          thumbnail: "https://media.w3.org/2010/05/bunny/poster.png",
-          views: "523K",
-        },
-      ],
-    },
-    {
-      id: "sintel-saga",
-      title: "辛特尔传说",
-      description:
-        "一个孤独的少女与一只小龙建立了深厚的友谊，并将它取名为「鳞片」。在被迫分离之后，她踏上了寻找它的奇幻旅程。",
-      tags: ["奇幻", "冒险", "情感"],
-      category: "奇幻",
-      thumbnail: "https://media.w3.org/2010/05/sintel/poster.png",
-      episodes: [
-        {
-          ep: 1,
-          title: "第一集 初识小龙",
-          src: "https://media.w3.org/2010/05/sintel/trailer.mp4",
-          duration: "0:52",
-          thumbnail: "https://media.w3.org/2010/05/sintel/poster.png",
-          views: "2.1M",
-        },
-        {
-          ep: 2,
-          title: "第二集 踏上旅途",
-          src: "https://download.blender.org/durian/trailer/sintel_trailer-480p.mp4",
-          duration: "0:52",
-          thumbnail: "https://media.w3.org/2010/05/sintel/poster.png",
-          views: "612K",
-        },
-      ],
-    },
-    {
-      id: "demo-shorts",
-      title: "示例短片合集",
-      description:
-        "一组用于快速验证播放器的迷你 HTML5 演示片段，方便测试导入与播放流程。",
-      tags: ["演示", "测试"],
-      category: "演示",
-      thumbnail:
-        "https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800",
-      episodes: [
-        {
-          ep: 1,
-          title: "第一集 W3C 示例片段",
-          src: "https://media.w3.org/2010/05/video/movie_300.mp4",
-          duration: "0:30",
-          thumbnail:
-            "https://images.unsplash.com/photo-1485846234645-a62644f84728?w=800",
-          views: "342K",
-        },
-        {
-          ep: 2,
-          title: "第二集 兔兔短片",
-          src: "https://www.w3schools.com/html/mov_bbb.mp4",
-          duration: "0:10",
-          thumbnail: "https://media.w3.org/2010/05/bunny/poster.png",
-          views: "455K",
-        },
-        {
-          ep: 3,
-          title: "第三集 林间漫步",
-          src: "https://www.w3schools.com/html/movie.mp4",
-          duration: "0:08",
-          thumbnail:
-            "https://images.unsplash.com/photo-1500530855697-b586d89ba3ee?w=800",
-          views: "210K",
-        },
-      ],
-    },
-  ];
+  // BUILTIN_SERIES 以前存放了 3 部演示短剧（兔兔传奇 / 辛特尔传说 / 示例短片合集），
+  // 已按产品要求删除。所有真正展示在首页的作品都来自 /api/library（即
+  // videos.local.json，由管理后台 → 作品管理 批量上传或 COS 导入），
+  // 由 mergeImported() 在页面加载时注入到 window.VIDEOS。
+  // 如果以后需要内置样例，直接在这个数组里补一两条即可。
+  const BUILTIN_SERIES = [];
 
   /** Composite id used by /api/stats for a single episode. */
   function episodeKey(seriesId, ep) {

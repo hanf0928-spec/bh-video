@@ -123,52 +123,159 @@
     window.open(url, "_blank", "noopener");
   }
 
-  /** Build the hero / featured banner using the first series. */
+  // Rotating hero banner state. We keep these at module scope so a
+  // rebuild (e.g. after the imported library finishes loading) can
+  // cleanly tear down the old timer.
+  let heroTimer = null;
+  let heroIndex = 0;
+  let heroSlides = [];
+
+  function stopHeroCarousel() {
+    if (heroTimer) {
+      clearInterval(heroTimer);
+      heroTimer = null;
+    }
+  }
+
+  function showHeroSlide(idx) {
+    if (!heroSlides.length) return;
+    heroIndex = ((idx % heroSlides.length) + heroSlides.length) % heroSlides.length;
+    const slideEls = heroEl.querySelectorAll(".hero-slide");
+    const dotEls = heroEl.querySelectorAll(".hero-dot");
+    slideEls.forEach((el, i) => {
+      el.classList.toggle("active", i === heroIndex);
+    });
+    dotEls.forEach((el, i) => {
+      el.classList.toggle("active", i === heroIndex);
+    });
+  }
+
+  function startHeroCarousel() {
+    stopHeroCarousel();
+    if (heroSlides.length < 2) return;
+    heroTimer = setInterval(() => {
+      showHeroSlide(heroIndex + 1);
+    }, 5000);
+  }
+
+  /**
+   * Pick the 3 most recently imported series for the hero carousel.
+   * Falls back to catalog order when imported_at is missing (e.g.
+   * someone deleted the field by hand or re-serialised the file).
+   */
+  function pickFeaturedSeries(list) {
+    const copy = list.slice();
+    copy.sort((a, b) => {
+      const ta = Number(a && a.imported_at) || 0;
+      const tb = Number(b && b.imported_at) || 0;
+      if (tb !== ta) return tb - ta;
+      // Stable fallback: keep catalog order so manual testing is
+      // predictable even without timestamps.
+      return 0;
+    });
+    return copy.slice(0, 3);
+  }
+
+  /** Build the hero / featured banner as a rotating carousel. */
   function renderHero() {
+    stopHeroCarousel();
     const list = getSeriesList();
     if (!list.length) {
       heroEl.innerHTML = "";
+      heroSlides = [];
+      heroEl.classList.remove("hero-has-carousel");
+      heroEl.onmouseenter = null;
+      heroEl.onmouseleave = null;
+      heroEl.onclick = null;
       return;
     }
-    const featured = list[0];
-    const title = i18n.pickLocalized(featured, "title");
-    const desc = i18n.pickLocalized(featured, "description");
-    const epCount = (featured.episodes || []).length;
-    const tags = Array.isArray(featured.tags) ? featured.tags : [];
 
-    heroEl.innerHTML = `
-      <div class="hero-bg" style="background-image:url('${featured.thumbnail}')"></div>
-      <div class="hero-content">
-        <span class="hero-badge">${escapeHtml(t("home.featured"))}</span>
-        <h1>${escapeHtml(title)}</h1>
-        ${
-          tags.length
-            ? `<div class="hero-tags">${tags
-                .map(
-                  (tag) =>
-                    `<span class="tag-chip">${escapeHtml(tag)}</span>`
-                )
-                .join("")}</div>`
-            : ""
-        }
-        <p>${escapeHtml(desc)}</p>
-        <div class="hero-meta">
-          <span>${escapeHtml(t("series.epCount", { n: epCount }))}</span>
-          <span class="dot">•</span>
-          <span>${escapeHtml(formatCount(seriesTotalPlays(featured)))} ${escapeHtml(
-      t("card.viewsSuffix")
-    )}</span>
-        </div>
-        <button class="play-now" type="button">
-          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
-            <path d="M8 5v14l11-7z"></path>
-          </svg>
-          ${escapeHtml(t("home.playNow"))}
-        </button>
-      </div>
-    `;
+    heroSlides = pickFeaturedSeries(list);
 
-    heroEl.onclick = () => openSeries(featured.id);
+    const slideHtml = heroSlides
+      .map((featured, idx) => {
+        const title = i18n.pickLocalized(featured, "title");
+        const desc = i18n.pickLocalized(featured, "description");
+        const epCount = (featured.episodes || []).length;
+        const tags = Array.isArray(featured.tags) ? featured.tags : [];
+        return `
+          <div class="hero-slide ${idx === 0 ? "active" : ""}" data-series-id="${escapeAttr(
+          featured.id
+        )}">
+            <div class="hero-bg" style="background-image:url('${featured.thumbnail}')"></div>
+            <div class="hero-content">
+              <span class="hero-badge">${escapeHtml(t("home.featured"))}</span>
+              <h1>${escapeHtml(title)}</h1>
+              ${
+                tags.length
+                  ? `<div class="hero-tags">${tags
+                      .map(
+                        (tag) =>
+                          `<span class="tag-chip">${escapeHtml(tag)}</span>`
+                      )
+                      .join("")}</div>`
+                  : ""
+              }
+              <p>${escapeHtml(desc)}</p>
+              <div class="hero-meta">
+                <span>${escapeHtml(t("series.epCount", { n: epCount }))}</span>
+                <span class="dot">•</span>
+                <span>${escapeHtml(
+                  formatCount(seriesTotalPlays(featured))
+                )} ${escapeHtml(t("card.viewsSuffix"))}</span>
+              </div>
+              <button class="play-now" type="button">
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+                  <path d="M8 5v14l11-7z"></path>
+                </svg>
+                ${escapeHtml(t("home.playNow"))}
+              </button>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+
+    const dotsHtml =
+      heroSlides.length > 1
+        ? `<div class="hero-dots">${heroSlides
+            .map(
+              (_, idx) =>
+                `<button type="button" class="hero-dot ${
+                  idx === 0 ? "active" : ""
+                }" data-dot-idx="${idx}" aria-label="Slide ${idx + 1}"></button>`
+            )
+            .join("")}</div>`
+        : "";
+
+    heroEl.innerHTML = slideHtml + dotsHtml;
+    heroEl.classList.toggle("hero-has-carousel", heroSlides.length > 1);
+    heroIndex = 0;
+
+    // Click on the hero body → open currently-visible series.
+    heroEl.onclick = (e) => {
+      if (e.target.closest(".hero-dot")) return; // dots handled separately
+      const current = heroSlides[heroIndex];
+      if (current) openSeries(current.id);
+    };
+
+    // Dot navigation.
+    heroEl.querySelectorAll(".hero-dot").forEach((dot) => {
+      dot.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const idx = Number(dot.getAttribute("data-dot-idx")) || 0;
+        showHeroSlide(idx);
+        // Reset auto-rotate so the user's choice stays visible for a
+        // full interval before the next slide takes over.
+        startHeroCarousel();
+      });
+    });
+
+    // Pause on hover so people can read the description.
+    heroEl.onmouseenter = stopHeroCarousel;
+    heroEl.onmouseleave = startHeroCarousel;
+
+    startHeroCarousel();
   }
 
   /** Build category chips from the unique set of categories. */

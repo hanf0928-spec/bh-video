@@ -241,6 +241,18 @@ def _validate_series(raw):
         "episodes": cleaned_eps,
     }
 
+    # Preserve a caller-supplied imported_at if present (seconds since
+    # epoch). Letting the request pass it through means re-saving an
+    # existing series via a round-trip through the API doesn't lose the
+    # original upload time. The merge step below is responsible for
+    # stamping brand-new entries.
+    try:
+        ts = int(raw.get("imported_at") or 0)
+        if ts > 0:
+            cleaned["imported_at"] = ts
+    except (TypeError, ValueError):
+        pass
+
     # Optional: keep i18n block if it looks well-formed.
     i18n = raw.get("i18n")
     if isinstance(i18n, dict):
@@ -264,9 +276,35 @@ def _validate_series(raw):
 
 
 def _merge_series(existing, incoming):
-    """Merge `incoming` into `existing` by id (incoming wins). Returns new list."""
-    by_id = {s["id"]: s for s in existing if isinstance(s, dict) and s.get("id")}
+    """
+    Merge `incoming` into `existing` by id (incoming wins).
+
+    Along the way we stamp each series with an `imported_at` timestamp
+    (unix seconds):
+      * every incoming series gets refreshed to "now" so the home-page
+        hero carousel can trivially pick the latest 3 uploads;
+      * every pre-existing entry without the field gets a 0 so it sorts
+        to the back (keeps legacy data working after the field is
+        introduced).
+    Returns the merged list in insertion order (existing-first, then
+    newly added — but ordering doesn't matter for the UI which sorts by
+    imported_at).
+    """
+    now_ts = int(time.time())
+    by_id = {}
+    for s in existing:
+        if not isinstance(s, dict) or not s.get("id"):
+            continue
+        if not isinstance(s.get("imported_at"), int) or s.get("imported_at", 0) <= 0:
+            s["imported_at"] = 0
+        by_id[s["id"]] = s
     for s in incoming:
+        if not isinstance(s, dict) or not s.get("id"):
+            continue
+        # Re-uploading an existing series counts as a fresh import — this
+        # bumps it to the top of the carousel.
+        s = dict(s)
+        s["imported_at"] = now_ts
         by_id[s["id"]] = s
     return list(by_id.values())
 
@@ -951,6 +989,12 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         with _library_lock:
             existing = _load_library()
             if mode == "replace":
+                # replace overwrites the whole library, but we still want
+                # the carousel to see today's upload as the newest — so
+                # stamp every incoming entry with "now".
+                now_ts = int(time.time())
+                for s in cleaned:
+                    s["imported_at"] = now_ts
                 merged = cleaned
             else:
                 merged = _merge_series(existing, cleaned)
