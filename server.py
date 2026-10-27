@@ -1,39 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-BH Video — Tiny static server with a play-count + library API.
+BH Video — Tiny static server with play-count, library, ads and admin APIs.
 
 Why this file exists
 --------------------
-The project is a pure static front-end, but the user wants
-- play counts persisted into a file inside the project folder, and
-- user-imported series (from the Excel-import dialog) persisted too.
+The project is a pure static front-end, but we need to persist a handful
+of counters into files inside the project folder:
+  - play counts (views.json)
+  - user-imported series (videos.local.json)
+  - ad impression / click counts (ads_stats.json)
+  - daily unique-visitor IPs (visits.json)
 Browsers cannot write local files directly, so we extend Python's built-in
-`http.server` with two tiny JSON APIs that the front-end calls.
+`http.server` with small JSON APIs that the front-end calls.
 
 Endpoints
 ---------
 GET  /api/stats
-    -> { "<episodeKey>": { "opens": N, "plays": N, "ends": N }, ... }
-       Episode keys look like "<seriesId>:ep<n>".
-
-POST /api/stats
-    Body: { "id": "<episodeKey>", "event": "open" | "play" | "ended" }
-    -> { "ok": true, "id": "...", "stats": { ... } }
-
+POST /api/stats                — bump an episode counter.
 GET  /api/library
-    -> { "imported": [ Series, ... ] }
-       Returns the user-imported series (videos.local.json). The built-in
-       catalog still ships in videos.js on the client.
+POST /api/import               — add imported series.
+POST /api/ads/track            — record ad impression / click events.
+POST /api/admin/login          — password-gated login, returns a token.
+GET  /api/admin/overview       — aggregated dashboard payload (token req.).
 
-POST /api/import
-    Body: { "series": [ Series, ... ] }
-    -> { "ok": true, "added": N, "imported": [ Series, ... ] }
-       Validates and merges the supplied series into videos.local.json
-       (overwriting existing entries with the same id).
-
-Everything else is delegated to SimpleHTTPRequestHandler so existing
-static assets (index.html, app.js, etc.) keep working unchanged.
+Every page GET (text/html) is also treated as a "visit" and the client
+IP is added to the UV set for today in visits.json.
 
 Run
 ---
@@ -41,19 +33,38 @@ Run
     python3 server.py 8080       # custom port
 """
 
+import datetime
+import hashlib
 import json
 import os
 import re
+import secrets
 import sys
 import threading
+import time
 from http import HTTPStatus
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 
 ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_FILE = os.path.join(ROOT_DIR, "views.json")
 LIBRARY_FILE = os.path.join(ROOT_DIR, "videos.local.json")
+ADS_STATS_FILE = os.path.join(ROOT_DIR, "ads_stats.json")
+VISITS_FILE = os.path.join(ROOT_DIR, "visits.json")
 VALID_EVENTS = ("open", "play", "ended")
 EVENT_FIELD = {"open": "opens", "play": "plays", "ended": "ends"}
+
+# Admin-dashboard credentials & session store.
+# Password is intentionally hard-coded per product spec.
+ADMIN_PASSWORD = "BH123456"
+# token -> expires_at (unix seconds). In-memory on purpose: resetting the
+# server invalidates all logins.
+_admin_sessions = {}
+_admin_sessions_lock = threading.Lock()
+ADMIN_TOKEN_TTL = 60 * 60 * 8  # 8 hours
+
+# Known ad slots recognised by /api/ads/track. Unknown slots are rejected.
+AD_SLOTS = ("top", "bottom", "float", "preroll", "preroll_cta")
+AD_EVENTS = ("impression", "click")
 
 # Conservative limits to keep imports sane.
 MAX_IMPORT_BYTES = 4 * 1024 * 1024  # 4 MiB JSON body
@@ -65,6 +76,8 @@ MAX_STR_LEN = 2000
 # cannot lose updates.
 _data_lock = threading.Lock()
 _library_lock = threading.Lock()
+_ads_lock = threading.Lock()
+_visits_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Stats persistence (views.json)
@@ -247,6 +260,111 @@ def _merge_series(existing, incoming):
         by_id[s["id"]] = s
     return list(by_id.values())
 
+# ---------------------------------------------------------------------------
+# Ads stats persistence (ads_stats.json)
+# ---------------------------------------------------------------------------
+
+def _load_ads_stats():
+    """Shape: { "<slot>": { "impressions": N, "clicks": N }, ... }"""
+    if not os.path.isfile(ADS_STATS_FILE):
+        return {}
+    try:
+        with open(ADS_STATS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def _save_ads_stats(stats):
+    tmp_path = ADS_STATS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(stats, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_path, ADS_STATS_FILE)
+
+def _ensure_ad_entry(stats, slot):
+    entry = stats.get(slot)
+    if not isinstance(entry, dict):
+        entry = {}
+    for k in ("impressions", "clicks"):
+        if not isinstance(entry.get(k), int):
+            entry[k] = 0
+    stats[slot] = entry
+    return entry
+
+# ---------------------------------------------------------------------------
+# Daily unique-visitor persistence (visits.json)
+# ---------------------------------------------------------------------------
+
+def _today_str():
+    """UTC+8 day string so 'daily UV' aligns with CN wall-clock."""
+    now = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+    return now.strftime("%Y-%m-%d")
+
+def _load_visits():
+    """Shape: { "YYYY-MM-DD": ["<ip-hash>", "<ip-hash>", ...], ... }"""
+    if not os.path.isfile(VISITS_FILE):
+        return {}
+    try:
+        with open(VISITS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def _save_visits(visits):
+    tmp_path = VISITS_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(visits, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_path, VISITS_FILE)
+
+def _hash_ip(ip):
+    """Store a short hash instead of raw IP for a bit of PII hygiene."""
+    if not ip:
+        return ""
+    return hashlib.sha1(("bhv-salt::" + ip).encode("utf-8")).hexdigest()[:16]
+
+def _record_visit(ip):
+    """Record a unique visitor for today. Returns True if newly seen."""
+    if not ip:
+        return False
+    ip_hash = _hash_ip(ip)
+    day = _today_str()
+    with _visits_lock:
+        visits = _load_visits()
+        day_list = visits.get(day)
+        if not isinstance(day_list, list):
+            day_list = []
+        if ip_hash in day_list:
+            return False
+        day_list.append(ip_hash)
+        visits[day] = day_list
+        _save_visits(visits)
+    return True
+
+# ---------------------------------------------------------------------------
+# Admin session helpers
+# ---------------------------------------------------------------------------
+
+def _issue_admin_token():
+    tok = secrets.token_urlsafe(24)
+    with _admin_sessions_lock:
+        _admin_sessions[tok] = time.time() + ADMIN_TOKEN_TTL
+        # Opportunistically prune expired tokens so the map stays small.
+        now = time.time()
+        for k in [k for k, exp in _admin_sessions.items() if exp < now]:
+            _admin_sessions.pop(k, None)
+    return tok
+
+def _validate_admin_token(tok):
+    if not tok:
+        return False
+    with _admin_sessions_lock:
+        exp = _admin_sessions.get(tok)
+        if not exp or exp < time.time():
+            _admin_sessions.pop(tok, None)
+            return False
+        return True
+
 
 # ---------------------------------------------------------------------------
 # HTTP handler
@@ -281,6 +399,23 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         except (ValueError, UnicodeDecodeError):
             return None, "invalid JSON body"
 
+    def _client_ip(self):
+        """Best-effort client IP that honours a single reverse-proxy hop."""
+        fwd = self.headers.get("X-Forwarded-For") or ""
+        if fwd:
+            # X-Forwarded-For: client, proxy1, proxy2 — take the first.
+            return fwd.split(",")[0].strip()
+        try:
+            return self.client_address[0]
+        except Exception:
+            return ""
+
+    def _bearer_token(self):
+        auth = self.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            return auth[7:].strip()
+        return ""
+
     # ---- Routing ----------------------------------------------------------
     def do_GET(self):
         path = self.path.split("?", 1)[0]
@@ -294,6 +429,18 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
                 imported = _load_library()
             self._send_json(HTTPStatus.OK, {"imported": imported})
             return
+        if path == "/api/admin/overview":
+            return self._handle_admin_overview()
+
+        # Any navigation to a .html page (or "/") counts as a visit for
+        # today's UV ledger. Note: static assets like .js/.css/.png are
+        # ignored so a single page view counts once.
+        if self._looks_like_page(path):
+            try:
+                _record_visit(self._client_ip())
+            except Exception:
+                pass
+
         return super().do_GET()
 
     def do_POST(self):
@@ -302,7 +449,22 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             return self._handle_stats_post()
         if path == "/api/import":
             return self._handle_import_post()
+        if path == "/api/ads/track":
+            return self._handle_ads_track()
+        if path == "/api/admin/login":
+            return self._handle_admin_login()
         self._send_error_json(HTTPStatus.NOT_FOUND, "unknown endpoint")
+
+    @staticmethod
+    def _looks_like_page(path):
+        """True for '/', '/foo.html', '/foo/' — things a human loads in a tab."""
+        if not path or path == "/":
+            return True
+        # Any extension other than .html → static asset, skip.
+        if "." in os.path.basename(path):
+            return path.endswith(".html")
+        # Directory-style URL.
+        return path.endswith("/")
 
     # ---- /api/stats POST --------------------------------------------------
     def _handle_stats_post(self):
@@ -382,6 +544,147 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             {"ok": True, "added": len(cleaned), "imported": merged},
         )
 
+    # ---- /api/ads/track POST ---------------------------------------------
+    def _handle_ads_track(self):
+        payload, err = self._read_json_body(1024)
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+        if not isinstance(payload, dict):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "expected JSON object")
+            return
+
+        slot = (payload.get("slot") or "").strip()
+        event = (payload.get("event") or "").strip()
+        if slot not in AD_SLOTS:
+            self._send_error_json(
+                HTTPStatus.BAD_REQUEST,
+                "'slot' must be one of: " + ", ".join(AD_SLOTS),
+            )
+            return
+        if event not in AD_EVENTS:
+            self._send_error_json(
+                HTTPStatus.BAD_REQUEST,
+                "'event' must be one of: " + ", ".join(AD_EVENTS),
+            )
+            return
+
+        field = "impressions" if event == "impression" else "clicks"
+        with _ads_lock:
+            stats = _load_ads_stats()
+            entry = _ensure_ad_entry(stats, slot)
+            entry[field] = int(entry.get(field, 0)) + 1
+            _save_ads_stats(stats)
+            updated = dict(entry)
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "slot": slot, "stats": updated},
+        )
+
+    # ---- /api/admin/login POST -------------------------------------------
+    def _handle_admin_login(self):
+        payload, err = self._read_json_body(512)
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+        if not isinstance(payload, dict):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "expected JSON object")
+            return
+        password = str(payload.get("password") or "")
+        # Constant-time compare to avoid trivial timing leaks.
+        if not secrets.compare_digest(password, ADMIN_PASSWORD):
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "invalid password")
+            return
+        token = _issue_admin_token()
+        self._send_json(
+            HTTPStatus.OK,
+            {"ok": True, "token": token, "ttl": ADMIN_TOKEN_TTL},
+        )
+
+    # ---- /api/admin/overview GET -----------------------------------------
+    def _handle_admin_overview(self):
+        # Token may come via Authorization header or ?token= query param.
+        token = self._bearer_token()
+        if not token:
+            qs = self.path.split("?", 1)[1] if "?" in self.path else ""
+            for part in qs.split("&"):
+                if part.startswith("token="):
+                    token = part[6:]
+                    break
+        if not _validate_admin_token(token):
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, "unauthorized")
+            return
+
+        with _data_lock:
+            play_stats = _load_stats()
+        with _ads_lock:
+            ads_stats = _load_ads_stats()
+        with _visits_lock:
+            visits = _load_visits()
+
+        # Normalise ad stats so every known slot is reported, even if the
+        # file has never seen that slot before.
+        ads_payload = {}
+        for slot in AD_SLOTS:
+            entry = ads_stats.get(slot) or {}
+            imp = int(entry.get("impressions") or 0)
+            clk = int(entry.get("clicks") or 0)
+            ctr = round(clk / imp * 100, 2) if imp > 0 else 0.0
+            ads_payload[slot] = {
+                "impressions": imp,
+                "clicks": clk,
+                "ctr": ctr,
+            }
+
+        # Daily UV time series: last 30 days (including today) sorted asc.
+        today = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+        series = []
+        total_uv = 0
+        for i in range(29, -1, -1):
+            d = (today - datetime.timedelta(days=i)).strftime("%Y-%m-%d")
+            n = len(visits.get(d) or [])
+            series.append({"date": d, "uv": n})
+            total_uv += n
+
+        today_key = today.strftime("%Y-%m-%d")
+        today_uv = len(visits.get(today_key) or [])
+
+        # Overall totals so the dashboard can show headline numbers.
+        total_opens = sum(int(e.get("opens") or 0) for e in play_stats.values() if isinstance(e, dict))
+        total_plays = sum(int(e.get("plays") or 0) for e in play_stats.values() if isinstance(e, dict))
+        total_ends = sum(int(e.get("ends") or 0) for e in play_stats.values() if isinstance(e, dict))
+        total_imp = sum(v["impressions"] for v in ads_payload.values())
+        total_clk = sum(v["clicks"] for v in ads_payload.values())
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "generated_at": today.strftime("%Y-%m-%d %H:%M:%S"),
+                "videos": {
+                    "episodes": play_stats,
+                    "totals": {
+                        "opens": total_opens,
+                        "plays": total_plays,
+                        "ends": total_ends,
+                    },
+                },
+                "ads": {
+                    "slots": ads_payload,
+                    "totals": {
+                        "impressions": total_imp,
+                        "clicks": total_clk,
+                        "ctr": round(total_clk / total_imp * 100, 2) if total_imp > 0 else 0.0,
+                    },
+                },
+                "visits": {
+                    "today": today_uv,
+                    "last_30_days": series,
+                    "total_30d": total_uv,
+                },
+            },
+        )
+
     # Keep the default logging tidy.
     def log_message(self, fmt, *args):
         sys.stderr.write("[bh-video] %s - %s\n" % (self.address_string(), fmt % args))
@@ -401,6 +704,9 @@ def main():
     print("BH-video server running at http://%s:%d/" % (bind, port))
     print("Stats file:    %s" % DATA_FILE)
     print("Library file:  %s" % LIBRARY_FILE)
+    print("Ads stats:     %s" % ADS_STATS_FILE)
+    print("Visits file:   %s" % VISITS_FILE)
+    print("Admin page:    http://%s:%d/admin.html  (password: %s)" % (bind, port, ADMIN_PASSWORD))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

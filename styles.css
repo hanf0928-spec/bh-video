@@ -965,3 +965,258 @@ button {
     grid-template-columns: 140px 1fr;
   }
 }
+
+/* =========================================================
+   Ads (top banner, bottom banner, floating box, pre-roll)
+   ========================================================= */
+
+.bhv-ad {
+  position: relative;
+}
+
+/* ---- Common banner ---- */
+.bhv-ad-banner {
+  width: 100%;
+  max-width: 1400px;
+  margin: 12px auto;
+  padding: 0 24px;
+  box-sizing: border-box;
+  position: relative;
+}
+
+.bhv-ad-banner .bhv-ad-img {
+  display: block;
+  width: 100%;
+  max-height: 160px;
+  object-fit: cover;
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  background: var(--bg-elev);
+}
+
+/* Top banner sits above the sticky header — give it a small top margin. */
+.bhv-ad-banner--top {
+  margin-top: 0;
+  padding-top: 12px;
+}
+
+.bhv-ad-banner--bottom {
+  margin-bottom: 24px;
+}
+
+/* "广告" tag badge on banners/floating ads */
+.bhv-ad-tag {
+  position: absolute;
+  top: 20px;
+  left: 36px;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+/* Close button on banners/floating ads */
+.bhv-ad-close {
+  position: absolute;
+  top: 18px;
+  right: 32px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.65);
+  color: #fff;
+  font-size: 18px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.bhv-ad-close:hover {
+  background: var(--accent);
+  transform: scale(1.1);
+}
+
+/* ---- Floating box ad ---- */
+.bhv-ad-float {
+  position: fixed;
+  z-index: 90;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  animation: bhv-ad-pop 320ms ease;
+}
+
+.bhv-ad-float .bhv-ad-img {
+  display: block;
+  width: 100%;
+  object-fit: cover;
+}
+
+.bhv-ad-float .bhv-ad-tag {
+  top: 8px;
+  left: 8px;
+}
+
+.bhv-ad-float .bhv-ad-close {
+  top: 6px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
+  font-size: 16px;
+}
+
+.bhv-ad-float--bottom-right {
+  right: 20px;
+  bottom: 20px;
+}
+.bhv-ad-float--bottom-left {
+  left: 20px;
+  bottom: 20px;
+}
+.bhv-ad-float--top-right {
+  right: 20px;
+  top: 80px;
+}
+.bhv-ad-float--top-left {
+  left: 20px;
+  top: 80px;
+}
+
+@keyframes bhv-ad-pop {
+  from {
+    opacity: 0;
+    transform: translateY(16px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* ---- Pre-roll overlay ---- */
+.bhv-ad-preroll {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgba(0, 0, 0, 0.92);
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  animation: bhv-ad-fade 200ms ease;
+}
+
+@keyframes bhv-ad-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.bhv-ad-preroll-inner {
+  position: relative;
+  width: 100%;
+  max-width: 960px;
+  aspect-ratio: 16 / 9;
+  background: #000;
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.8);
+}
+
+.bhv-ad-preroll-video {
+  width: 100%;
+  height: 100%;
+  display: block;
+  background: #000;
+}
+
+.bhv-ad-preroll-label {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  background: rgba(0, 0, 0, 0.75);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  padding: 4px 10px;
+  border-radius: 4px;
+  pointer-events: none;
+}
+
+.bhv-ad-preroll-cta {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  color: #fff;
+  border: none;
+  padding: 10px 18px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(255, 77, 109, 0.35);
+  transition: transform var(--transition);
+}
+
+.bhv-ad-preroll-cta:hover {
+  transform: translateY(-1px);
+}
+
+.bhv-ad-preroll-skip {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--transition), transform var(--transition);
+}
+
+.bhv-ad-preroll-skip:disabled {
+  background: rgba(255, 255, 255, 0.35);
+  color: #ddd;
+  cursor: not-allowed;
+}
+
+.bhv-ad-preroll-skip:not(:disabled):hover {
+  background: #fff;
+  transform: translateY(-1px);
+}
+
+@media (max-width: 720px) {
+  .bhv-ad-banner {
+    padding: 0 16px;
+  }
+  .bhv-ad-tag {
+    left: 28px;
+    top: 18px;
+  }
+  .bhv-ad-close {
+    right: 24px;
+    top: 16px;
+  }
+  .bhv-ad-float {
+    width: 140px !important;
+  }
+  .bhv-ad-float .bhv-ad-img {
+    height: 140px !important;
+  }
+}

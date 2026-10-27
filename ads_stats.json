@@ -1,0 +1,22 @@
+{
+  "bottom": {
+    "clicks": 0,
+    "impressions": 4
+  },
+  "float": {
+    "clicks": 1,
+    "impressions": 4
+  },
+  "preroll": {
+    "clicks": 0,
+    "impressions": 2
+  },
+  "preroll_cta": {
+    "clicks": 1,
+    "impressions": 0
+  },
+  "top": {
+    "clicks": 0,
+    "impressions": 4
+  }
+}

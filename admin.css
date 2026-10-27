@@ -1,0 +1,340 @@
+/* =========================================================
+   BH Video — Admin dashboard stylesheet
+   Reuses tokens from styles.css (loaded before this file).
+   ========================================================= */
+
+/* The HTML `hidden` attribute normally resolves to `display:none`,
+   but our .admin-login / .admin-dashboard rules below explicitly set
+   `display: grid` / `display: block` which *overrides* that default.
+   Force it back with `!important` so toggling `.hidden` keeps working. */
+[hidden] {
+  display: none !important;
+}
+
+.admin-page {
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+/* ---- Login ---- */
+.admin-login {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: radial-gradient(1200px 600px at 50% -10%, rgba(255, 77, 109, 0.25), transparent 60%),
+    var(--bg);
+}
+
+.admin-login-card {
+  width: 100%;
+  max-width: 420px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 32px 28px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6);
+}
+
+.admin-login-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.admin-login-brand h1 {
+  font-size: 22px;
+  margin: 0;
+  font-weight: 700;
+}
+
+.admin-login-brand .logo-mark {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+}
+
+.admin-login-sub {
+  color: var(--text-dim);
+  font-size: 13px;
+  margin: 0 0 20px;
+}
+
+.admin-input-wrap {
+  display: block;
+  margin-bottom: 14px;
+}
+
+.admin-input-wrap input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text);
+  font-size: 14px;
+  padding: 11px 14px;
+  outline: none;
+  transition: border-color var(--transition);
+  box-sizing: border-box;
+}
+
+.admin-input-wrap input:focus {
+  border-color: var(--accent);
+}
+
+.admin-login-btn {
+  width: 100%;
+  padding: 11px;
+  font-size: 14px;
+  letter-spacing: 2px;
+}
+
+.admin-login-error {
+  margin-top: 14px;
+  background: rgba(255, 77, 109, 0.1);
+  border: 1px solid rgba(255, 77, 109, 0.4);
+  color: var(--accent);
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+/* ---- Dashboard shell ---- */
+.admin-dashboard {
+  display: block;
+}
+
+.admin-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(15, 15, 18, 0.9);
+  backdrop-filter: saturate(140%) blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.admin-header-inner {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 14px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.admin-brand .accent {
+  color: var(--accent);
+}
+
+.admin-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.admin-muted {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.admin-main {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* ---- KPI cards ---- */
+.kpi-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.kpi-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+}
+
+.kpi-card::after {
+  content: "";
+  position: absolute;
+  right: -40px;
+  top: -40px;
+  width: 140px;
+  height: 140px;
+  background: radial-gradient(circle, rgba(255, 77, 109, 0.18), transparent 70%);
+  pointer-events: none;
+}
+
+.kpi-label {
+  font-size: 13px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.kpi-value {
+  font-size: 32px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.kpi-foot {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 6px;
+}
+
+.kpi-foot span {
+  color: var(--text);
+  font-weight: 600;
+}
+
+/* ---- Card ---- */
+.admin-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.admin-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.admin-card-head h2 {
+  font-size: 16px;
+  margin: 0;
+  font-weight: 700;
+}
+
+/* ---- Table ---- */
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+}
+
+.admin-table th {
+  color: var(--text-dim);
+  font-weight: 600;
+  background: var(--bg-elev-2);
+  position: sticky;
+  top: 0;
+}
+
+.admin-table td.num,
+.admin-table th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin-table tbody tr:hover {
+  background: var(--bg-elev-2);
+}
+
+.admin-table .slot-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(255, 77, 109, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+  font-size: 12px;
+}
+
+/* ---- UV bar chart (CSS only) ---- */
+.uv-chart {
+  display: grid;
+  grid-template-columns: repeat(30, minmax(0, 1fr));
+  gap: 4px;
+  align-items: end;
+  height: 200px;
+  padding-top: 8px;
+}
+
+.uv-bar {
+  position: relative;
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  border-radius: 3px 3px 0 0;
+  min-height: 2px;
+  cursor: pointer;
+  transition: filter var(--transition);
+}
+
+.uv-bar:hover {
+  filter: brightness(1.2);
+}
+
+.uv-bar[data-uv="0"] {
+  background: var(--bg-elev-2);
+}
+
+.uv-bar .uv-tip {
+  position: absolute;
+  bottom: 100%;
+  left: 50%;
+  transform: translate(-50%, -6px);
+  background: #111;
+  color: #fff;
+  padding: 4px 8px;
+  font-size: 11px;
+  border-radius: 4px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition);
+  z-index: 2;
+}
+
+.uv-bar:hover .uv-tip {
+  opacity: 1;
+}
+
+.empty-row td {
+  text-align: center;
+  color: var(--text-dim);
+  padding: 24px 10px;
+}
+
+@media (max-width: 720px) {
+  .admin-main {
+    padding: 16px;
+  }
+  .uv-chart {
+    grid-template-columns: repeat(30, minmax(0, 1fr));
+    height: 140px;
+  }
+  .kpi-value {
+    font-size: 26px;
+  }
+}

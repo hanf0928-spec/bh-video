@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BH Video — 后台管理</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="admin.css" />
+</head>
+<body class="admin-page">
+  <!-- ========== Login screen ========== -->
+  <section id="loginScreen" class="admin-login">
+    <div class="admin-login-card">
+      <div class="admin-login-brand">
+        <span class="logo-mark">▶</span>
+        <h1>BH <span class="accent">管理后台</span></h1>
+      </div>
+      <p class="admin-login-sub">请输入管理员密码以继续</p>
+      <form id="loginForm" autocomplete="off">
+        <label class="admin-input-wrap">
+          <input id="loginPassword" type="password" placeholder="管理员密码" autocomplete="current-password" required />
+        </label>
+        <button type="submit" class="btn-primary admin-login-btn">登 录</button>
+        <div id="loginError" class="admin-login-error" hidden></div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ========== Dashboard ========== -->
+  <section id="dashboard" class="admin-dashboard" hidden>
+    <header class="admin-header">
+      <div class="admin-header-inner">
+        <div class="admin-brand">
+          <span class="logo-mark">▶</span>
+          <strong>BH<span class="accent">Video</span> · 后台</strong>
+        </div>
+        <div class="admin-header-actions">
+          <span id="generatedAt" class="admin-muted"></span>
+          <button id="refreshBtn" class="btn-secondary" type="button">刷新</button>
+          <button id="logoutBtn" class="btn-secondary" type="button">退出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="admin-main">
+      <!-- Headline KPIs -->
+      <div class="kpi-row">
+        <div class="kpi-card">
+          <div class="kpi-label">今日活跃用户 (UV)</div>
+          <div class="kpi-value" id="kpiUvToday">0</div>
+          <div class="kpi-foot">近 30 天合计：<span id="kpiUv30">0</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">视频累计播放次数</div>
+          <div class="kpi-value" id="kpiPlays">0</div>
+          <div class="kpi-foot">打开 <span id="kpiOpens">0</span> · 看完 <span id="kpiEnds">0</span></div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">广告总点击</div>
+          <div class="kpi-value" id="kpiAdClicks">0</div>
+          <div class="kpi-foot">曝光 <span id="kpiAdImpr">0</span> · CTR <span id="kpiAdCtr">0%</span></div>
+        </div>
+      </div>
+
+      <!-- Daily UV chart -->
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>📈 日活用户趋势（近 30 天 · 按 IP 去重）</h2>
+          <span class="admin-muted">同一 IP 在一天内多次访问只记一次</span>
+        </div>
+        <div class="uv-chart" id="uvChart"></div>
+      </section>
+
+      <!-- Ads table -->
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>📢 广告位点击统计</h2>
+          <span class="admin-muted">曝光 / 点击 / 点击率 (CTR)</span>
+        </div>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>广告位</th>
+              <th class="num">曝光数</th>
+              <th class="num">点击数</th>
+              <th class="num">CTR</th>
+            </tr>
+          </thead>
+          <tbody id="adsTbody"></tbody>
+        </table>
+      </section>
+
+      <!-- Video playback table -->
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>🎬 视频播放次数排行</h2>
+          <span class="admin-muted">按真实播放次数 (plays) 从高到低</span>
+        </div>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>剧集</th>
+              <th>集数</th>
+              <th class="num">打开</th>
+              <th class="num">播放</th>
+              <th class="num">看完</th>
+              <th class="num">完播率</th>
+            </tr>
+          </thead>
+          <tbody id="videosTbody"></tbody>
+        </table>
+      </section>
+    </main>
+  </section>
+
+  <script src="videos.js"></script>
+  <script src="admin.js"></script>
+</body>
+</html>

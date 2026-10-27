@@ -207,11 +207,42 @@
       videoEl.dataset.epNum = String(episode.ep);
       playReportedFor = null;
       videoEl.load();
-      const playPromise = videoEl.play();
-      if (playPromise && typeof playPromise.catch === "function") {
-        playPromise.catch(() => {
-          /* Autoplay may be blocked — user can press play manually. */
+
+      // Pre-roll ad gate — only on fresh episode loads. If the ads module
+      // decides this is a milestone episode (every N episodes in the same
+      // browser), we pause the main video and show the ad overlay first.
+      const Ads = window.BHAds;
+      const shouldPreRoll =
+        Ads && typeof Ads.notifyEpisodeOpen === "function"
+          ? Ads.notifyEpisodeOpen(series.id, episode.ep)
+          : false;
+
+      const startMainVideo = () => {
+        const p = videoEl.play();
+        if (p && typeof p.catch === "function") {
+          p.catch(() => {
+            /* Autoplay may be blocked — user can press play manually. */
+          });
+        }
+      };
+
+      if (shouldPreRoll && Ads && typeof Ads.playPreRoll === "function") {
+        // Pause main video until ad finishes/skipped.
+        try {
+          videoEl.pause();
+        } catch (_) {}
+        Ads.playPreRoll().finally(() => {
+          // Make sure we're still on the same episode (user may have
+          // navigated away while the ad was playing).
+          if (
+            videoEl.dataset.seriesId === series.id &&
+            Number(videoEl.dataset.epNum) === Number(episode.ep)
+          ) {
+            startMainVideo();
+          }
         });
+      } else {
+        startMainVideo();
       }
     }
 
