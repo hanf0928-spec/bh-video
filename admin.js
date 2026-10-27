@@ -46,6 +46,51 @@
   const adsTbody = document.getElementById("adsTbody");
   const videosTbody = document.getElementById("videosTbody");
 
+  // ---- Library / upload tab elements ----
+  const tabs = document.querySelectorAll(".admin-tab");
+  const tabOverview = document.getElementById("tab-overview");
+  const tabLibrary = document.getElementById("tab-library");
+
+  const uploadModeBtns = document.querySelectorAll(".upload-mode-btn");
+  const uploadFormPane = document.getElementById("uploadForm");
+  const uploadJsonPane = document.getElementById("uploadJson");
+  const uploadFilePane = document.getElementById("uploadFile");
+
+  const seriesForms = document.getElementById("seriesForms");
+  const addSeriesBtn = document.getElementById("addSeriesBtn");
+  const submitSeriesBtn = document.getElementById("submitSeriesBtn");
+  const uploadStatus = document.getElementById("uploadStatus");
+
+  const jsonInput = document.getElementById("jsonInput");
+  const submitJsonBtn = document.getElementById("submitJsonBtn");
+  const jsonStatus = document.getElementById("jsonStatus");
+
+  const fileInput = document.getElementById("fileInput");
+  const fileDrop = document.getElementById("fileDrop");
+  const filePreview = document.getElementById("filePreview");
+  const replaceMode = document.getElementById("replaceMode");
+  const submitFileBtn = document.getElementById("submitFileBtn");
+  const fileStatus = document.getElementById("fileStatus");
+
+  const libraryTbody = document.getElementById("libraryTbody");
+  const reloadLibraryBtn = document.getElementById("reloadLibraryBtn");
+
+  const seriesFormTpl = document.getElementById("seriesFormTpl");
+  const episodeRowTpl = document.getElementById("episodeRowTpl");
+
+  // ---- COS import panel ----
+  const uploadCosPane = document.getElementById("uploadCos");
+  const cosPrefix = document.getElementById("cosPrefix");
+  const cosTitle = document.getElementById("cosTitle");
+  const cosId = document.getElementById("cosId");
+  const cosCategory = document.getElementById("cosCategory");
+  const cosAuthor = document.getElementById("cosAuthor");
+  const cosDescription = document.getElementById("cosDescription");
+  const cosPreviewBtn = document.getElementById("cosPreviewBtn");
+  const cosImportBtn = document.getElementById("cosImportBtn");
+  const cosStatus = document.getElementById("cosStatus");
+  const cosPreview = document.getElementById("cosPreview");
+
   /* ---------- Token helpers ---------- */
   function getToken() {
     try {
@@ -123,9 +168,433 @@
     showLogin();
   });
 
-  refreshBtn.addEventListener("click", function () {
-    loadOverview();
+  /* ---------- Tab switching ---------- */
+  function activateTab(name) {
+    tabs.forEach(function (t) {
+      t.classList.toggle("active", t.getAttribute("data-tab") === name);
+    });
+    tabOverview.hidden = name !== "overview";
+    tabLibrary.hidden = name !== "library";
+    if (name === "library") loadLibrary();
+  }
+  tabs.forEach(function (t) {
+    t.addEventListener("click", function () {
+      activateTab(t.getAttribute("data-tab"));
+    });
   });
+
+  /* ---------- Upload mode switching ---------- */
+  function activateUploadMode(mode) {
+    uploadModeBtns.forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-mode") === mode);
+    });
+    uploadFormPane.hidden = mode !== "form";
+    uploadJsonPane.hidden = mode !== "json";
+    uploadFilePane.hidden = mode !== "file";
+    if (uploadCosPane) uploadCosPane.hidden = mode !== "cos";
+  }
+  uploadModeBtns.forEach(function (b) {
+    b.addEventListener("click", function () {
+      activateUploadMode(b.getAttribute("data-mode"));
+    });
+  });
+
+  /* ---------- Visual batch form ---------- */
+  function addEpisodeRow(container) {
+    const node = episodeRowTpl.content.firstElementChild.cloneNode(true);
+    node.querySelector("[data-del-ep]").addEventListener("click", function () {
+      node.remove();
+    });
+    container.appendChild(node);
+  }
+
+  function addSeriesForm() {
+    const node = seriesFormTpl.content.firstElementChild.cloneNode(true);
+    const idx = seriesForms.children.length + 1;
+    node.querySelector(".series-form-title").textContent = "作品 " + idx;
+    node.querySelector("[data-del-series]").addEventListener("click", function () {
+      node.remove();
+      // renumber
+      Array.prototype.forEach.call(seriesForms.children, function (c, i) {
+        const t = c.querySelector(".series-form-title");
+        if (t) t.textContent = "作品 " + (i + 1);
+      });
+    });
+    node.querySelector("[data-add-ep]").addEventListener("click", function () {
+      addEpisodeRow(node.querySelector("[data-eps]"));
+    });
+    // seed with one episode
+    addEpisodeRow(node.querySelector("[data-eps]"));
+    seriesForms.appendChild(node);
+  }
+
+  addSeriesBtn.addEventListener("click", addSeriesForm);
+
+  function collectSeries() {
+    const out = [];
+    Array.prototype.forEach.call(seriesForms.children, function (card) {
+      const f = {};
+      card.querySelectorAll("[data-f]").forEach(function (el) {
+        f[el.getAttribute("data-f")] = el.value.trim();
+      });
+      const eps = [];
+      card.querySelectorAll("[data-ep]").forEach(function (epRow) {
+        const e = {};
+        epRow.querySelectorAll("[data-f]").forEach(function (el) {
+          e[el.getAttribute("data-f")] = el.value.trim();
+        });
+        if (e.src) eps.push(e);
+      });
+      if (f.id && eps.length) {
+        f.episodes = eps;
+        delete f.ep;
+        out.push(f);
+      }
+    });
+    return out;
+  }
+
+  submitSeriesBtn.addEventListener("click", function () {
+    const series = collectSeries();
+    if (!series.length) {
+      uploadStatus.textContent = "请至少填写一部作品（含作品 ID 与至少一集视频地址）";
+      uploadStatus.className = "upload-status err";
+      return;
+    }
+    uploadStatus.textContent = "上传中…";
+    uploadStatus.className = "upload-status";
+    submitSeriesBtn.disabled = true;
+    postImport({ series: series }, function (ok, msg) {
+      submitSeriesBtn.disabled = false;
+      uploadStatus.textContent = msg;
+      uploadStatus.className = "upload-status " + (ok ? "ok" : "err");
+      if (ok) {
+        seriesForms.innerHTML = "";
+        addSeriesForm();
+        loadLibrary();
+      }
+    });
+  });
+
+  /* ---------- JSON paste ---------- */
+  submitJsonBtn.addEventListener("click", function () {
+    const text = jsonInput.value.trim();
+    if (!text) {
+      jsonStatus.textContent = "请粘贴 JSON";
+      jsonStatus.className = "upload-status err";
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      jsonStatus.textContent = "JSON 解析失败：" + e.message;
+      jsonStatus.className = "upload-status err";
+      return;
+    }
+    let body = parsed;
+    if (Array.isArray(parsed)) body = { series: parsed };
+    else if (parsed && Array.isArray(parsed.series)) body = parsed;
+    else if (parsed && parsed.id) body = { series: [parsed] };
+    jsonStatus.textContent = "上传中…";
+    jsonStatus.className = "upload-status";
+    submitJsonBtn.disabled = true;
+    postImport(body, function (ok, msg) {
+      submitJsonBtn.disabled = false;
+      jsonStatus.textContent = msg;
+      jsonStatus.className = "upload-status " + (ok ? "ok" : "err");
+      if (ok) loadLibrary();
+    });
+  });
+
+  /* ---------- File upload ---------- */
+  let pendingFiles = [];
+  fileInput.addEventListener("change", function () {
+    pendingFiles = Array.prototype.slice.call(fileInput.files || []);
+    renderFilePreview();
+  });
+
+  if (fileDrop) {
+    ["dragover", "dragenter"].forEach(function (ev) {
+      fileDrop.addEventListener(ev, function (e) {
+        e.preventDefault();
+        fileDrop.classList.add("drag");
+      });
+    });
+    ["dragleave", "drop"].forEach(function (ev) {
+      fileDrop.addEventListener(ev, function (e) {
+        e.preventDefault();
+        fileDrop.classList.remove("drag");
+      });
+    });
+    fileDrop.addEventListener("drop", function (e) {
+      const files = (e.dataTransfer && e.dataTransfer.files) || [];
+      pendingFiles = Array.prototype.slice.call(files).filter(function (f) {
+        return /\.json$/i.test(f.name) || f.type === "application/json";
+      });
+      renderFilePreview();
+    });
+  }
+
+  function renderFilePreview() {
+    submitFileBtn.disabled = pendingFiles.length === 0;
+    if (!pendingFiles.length) {
+      filePreview.innerHTML = "";
+      return;
+    }
+    filePreview.innerHTML = pendingFiles
+      .map(function (f, i) {
+        return (
+          '<div class="upload-file-item">📄 ' +
+          esc(f.name) +
+          ' <span class="admin-muted">(' +
+          (f.size || 0) +
+          " bytes)</span></div>"
+        );
+      })
+      .join("");
+  }
+
+  submitFileBtn.addEventListener("click", function () {
+    if (!pendingFiles.length) return;
+    const fd = new FormData();
+    pendingFiles.forEach(function (f) {
+      fd.append("file", f, f.name);
+    });
+    fd.append("mode", replaceMode.checked ? "replace" : "append");
+    fileStatus.textContent = "上传中…";
+    fileStatus.className = "upload-status";
+    submitFileBtn.disabled = true;
+    fetch("/api/import/file", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + getToken() },
+      body: fd,
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok && d.ok, d: d };
+        });
+      })
+      .then(function (res) {
+        submitFileBtn.disabled = false;
+        const msg = res.ok
+          ? "成功导入 " + res.d.added + " 部作品"
+          : "失败：" + (res.d.error || res.d.err || "未知错误");
+        fileStatus.textContent = msg;
+        fileStatus.className = "upload-status " + (res.ok ? "ok" : "err");
+        if (res.ok) {
+          pendingFiles = [];
+          fileInput.value = "";
+          renderFilePreview();
+          loadLibrary();
+        }
+      })
+      .catch(function (err) {
+        submitFileBtn.disabled = false;
+        fileStatus.textContent = "请求异常：" + (err && err.message);
+        fileStatus.className = "upload-status err";
+      });
+  });
+
+  /* ---------- Tencent COS import ---------- */
+  function cosPayload() {
+    return {
+      prefix: (cosPrefix.value || "").trim(),
+      title: (cosTitle.value || "").trim(),
+      id: (cosId.value || "").trim(),
+      category: (cosCategory.value || "").trim(),
+      author: (cosAuthor.value || "").trim(),
+      description: (cosDescription.value || "").trim(),
+    };
+  }
+
+  function renderCosPreview(data) {
+    if (!data || !data.series) {
+      cosPreview.hidden = true;
+      cosPreview.innerHTML = "";
+      return;
+    }
+    const s = data.series;
+    const m = data.meta || {};
+    const eps = (s.episodes || [])
+      .map(function (ep) {
+        return (
+          '<li><span class="cos-ep-num">EP' +
+          ep.ep +
+          "</span> " +
+          esc(ep.title) +
+          ' <span class="admin-muted">' +
+          esc((ep.src || "").slice(0, 90)) +
+          (ep.src && ep.src.length > 90 ? "…" : "") +
+          "</span></li>"
+        );
+      })
+      .join("");
+    const cover = s.thumbnail
+      ? '<img src="' + esc(s.thumbnail) + '" alt="封面" class="cos-cover" />'
+      : '<div class="cos-cover cos-cover-empty">暂无封面图</div>';
+    cosPreview.innerHTML =
+      '<div class="cos-preview-head">' +
+      cover +
+      "<div>" +
+      "<h3>" + esc(s.title) + "</h3>" +
+      '<p class="admin-muted">作品 ID: ' + esc(s.id) +
+      " · 共扫描 " + (m.scanned || 0) + " 个对象 · 识别 " + (m.video_count || eps.length) + " 集 · 封面: " +
+      (m.cover_key ? esc(m.cover_key) : "<i>无</i>") +
+      "</p></div></div>" +
+      "<ul class=\"cos-ep-list\">" + eps + "</ul>";
+    cosPreview.hidden = false;
+  }
+
+  function cosRequest(url, cb) {
+    const body = cosPayload();
+    if (!body.prefix) {
+      cosStatus.textContent = "请填写 COS 对象路径";
+      cosStatus.className = "upload-status err";
+      return;
+    }
+    cosStatus.textContent = "处理中…";
+    cosStatus.className = "upload-status";
+    cosPreviewBtn.disabled = true;
+    cosImportBtn.disabled = true;
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + getToken(),
+      },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok && d.ok, d: d };
+        });
+      })
+      .then(function (res) {
+        cosPreviewBtn.disabled = false;
+        cosImportBtn.disabled = false;
+        cb(res);
+      })
+      .catch(function (err) {
+        cosPreviewBtn.disabled = false;
+        cosImportBtn.disabled = false;
+        cosStatus.textContent = "请求异常：" + (err && err.message);
+        cosStatus.className = "upload-status err";
+      });
+  }
+
+  if (cosPreviewBtn) {
+    cosPreviewBtn.addEventListener("click", function () {
+      cosRequest("/api/cos/preview", function (res) {
+        if (!res.ok) {
+          cosStatus.textContent = "预览失败：" + (res.d.error || "未知错误");
+          cosStatus.className = "upload-status err";
+          renderCosPreview(null);
+          return;
+        }
+        const m = res.d.meta || {};
+        cosStatus.textContent =
+          "扫描完成：识别 " + (m.video_count || 0) + " 集，可直接导入";
+        cosStatus.className = "upload-status ok";
+        renderCosPreview(res.d);
+      });
+    });
+  }
+
+  if (cosImportBtn) {
+    cosImportBtn.addEventListener("click", function () {
+      cosRequest("/api/cos/import", function (res) {
+        if (!res.ok) {
+          cosStatus.textContent = "导入失败：" + (res.d.error || "未知错误");
+          cosStatus.className = "upload-status err";
+          return;
+        }
+        cosStatus.textContent =
+          "导入成功：已上架作品《" +
+          (res.d.series ? res.d.series.title : "") +
+          "》，共 " +
+          (res.d.series ? (res.d.series.episodes || []).length : 0) +
+          " 集";
+        cosStatus.className = "upload-status ok";
+        renderCosPreview({ series: res.d.series, meta: res.d.meta });
+        loadLibrary();
+      });
+    });
+  }
+
+  /* ---------- Shared import caller ---------- */
+  function postImport(body, cb) {
+    fetch("/api/import", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + getToken(),
+      },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok && d.ok, d: d };
+        });
+      })
+      .then(function (res) {
+        cb(
+          res.ok,
+          res.ok
+            ? "成功导入 " + res.d.added + " 部作品"
+            : "失败：" + (res.d.error || "未知错误")
+        );
+      })
+      .catch(function (err) {
+        cb(false, "请求异常：" + (err && err.message));
+      });
+  }
+
+  /* ---------- Library list ---------- */
+  function loadLibrary() {
+    if (tabLibrary.hidden) return;
+    fetch("/api/library")
+      .then(function (r) {
+        return r.ok ? r.json() : null;
+      })
+      .then(function (data) {
+        const list = (data && data.imported) || [];
+        if (!list.length) {
+          libraryTbody.innerHTML =
+            '<tr class="empty-row"><td colspan="6">暂无作品，请在上方批量上传</td></tr>';
+          return;
+        }
+        libraryTbody.innerHTML = list
+          .map(function (s, i) {
+            const epCount = (s.episodes || []).length;
+            return (
+              "<tr>" +
+              "<td>" +
+              (i + 1) +
+              "</td>" +
+              "<td>" +
+              esc(s.id) +
+              "</td>" +
+              "<td>" +
+              esc(s.title) +
+              "</td>" +
+              "<td>" +
+              esc(s.category) +
+              "</td>" +
+              '<td class="num">' +
+              epCount +
+              "</td>" +
+              '<td><a class="btn-link" target="_blank" href="player.html?id=' +
+              encodeURIComponent(s.id) +
+              '">查看</a></td>' +
+              "</tr>"
+            );
+          })
+          .join("");
+      })
+      .catch(function () {});
+  }
+  reloadLibraryBtn.addEventListener("click", loadLibrary);
 
   /* ---------- Load dashboard data ---------- */
   function loadOverview() {
@@ -365,6 +834,8 @@
         if (getToken()) {
           showDashboard();
           loadOverview();
+          // Seed the upload form with one blank series.
+          addSeriesForm();
         } else {
           showLogin();
         }

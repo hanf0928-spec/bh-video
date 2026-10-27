@@ -50,3 +50,6 @@ coverage/
 # Runtime data
 views.json
 views.json.tmp
+
+# Tencent COS credentials (keep example file in VCS, ignore the real one)
+cos_config.json

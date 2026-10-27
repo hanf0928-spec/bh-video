@@ -1,0 +1,11 @@
+{
+  "_comment": "Copy this file to cos_config.json and fill in real credentials. cos_config.json is git-ignored.",
+  "secret_id": "YOUR_TENCENT_SECRET_ID",
+  "secret_key": "YOUR_TENCENT_SECRET_KEY",
+  "region": "ap-guangzhou",
+  "bucket": "your-bucket-1250000000",
+  "scheme": "https",
+  "url_mode": "signed",
+  "signed_url_ttl": 86400,
+  "cdn_domain": ""
+}

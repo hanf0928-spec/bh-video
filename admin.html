@@ -36,13 +36,17 @@
         </div>
         <div class="admin-header-actions">
           <span id="generatedAt" class="admin-muted"></span>
-          <button id="refreshBtn" class="btn-secondary" type="button">刷新</button>
           <button id="logoutBtn" class="btn-secondary" type="button">退出</button>
         </div>
       </div>
+      <nav class="admin-tabs">
+        <button class="admin-tab active" data-tab="overview" type="button">📊 数据概览</button>
+        <button class="admin-tab" data-tab="library" type="button">🎬 作品管理</button>
+      </nav>
     </header>
 
-    <main class="admin-main">
+    <!-- ===== Tab: overview ===== -->
+    <main id="tab-overview" class="admin-main admin-tab-panel">
       <!-- Headline KPIs -->
       <div class="kpi-row">
         <div class="kpi-card">
@@ -112,7 +116,181 @@
         </table>
       </section>
     </main>
+
+    <!-- ===== Tab: library (批量上传短剧) ===== -->
+    <main id="tab-library" class="admin-main admin-tab-panel" hidden>
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>📤 批量上传短剧作品</h2>
+          <span class="admin-muted">支持一次上传多部作品，每部可含多集</span>
+        </div>
+
+        <div class="upload-modes">
+          <button class="upload-mode-btn active" data-mode="form" type="button">📝 可视化表单</button>
+          <button class="upload-mode-btn" data-mode="json" type="button">📋 粘贴 JSON</button>
+          <button class="upload-mode-btn" data-mode="file" type="button">📁 上传文件</button>
+          <button class="upload-mode-btn" data-mode="cos" type="button">☁️ 腾讯云 COS 导入</button>
+        </div>
+
+        <!-- Mode: visual form (batch) -->
+        <div id="uploadForm" class="upload-pane">
+          <div id="seriesForms"></div>
+          <div class="upload-form-actions">
+            <button id="addSeriesBtn" class="btn-secondary" type="button">＋ 添加一部作品</button>
+            <span class="admin-muted">每部作品可添加多集，提交时一并批量导入</span>
+          </div>
+          <div class="upload-submit-row">
+            <button id="submitSeriesBtn" class="btn-primary" type="button">批量上传所选作品</button>
+            <span id="uploadStatus" class="upload-status"></span>
+          </div>
+        </div>
+
+        <!-- Mode: paste JSON -->
+        <div id="uploadJson" class="upload-pane" hidden>
+          <p class="admin-muted upload-hint">
+            粘贴与导入接口一致的 JSON：<code>{"series":[{"id":"...","title":"...","episodes":[{"src":"...","title":"第1集"}]}]}</code>
+          </p>
+          <textarea id="jsonInput" class="upload-textarea" placeholder='{"series":[...]}'></textarea>
+          <div class="upload-submit-row">
+            <button id="submitJsonBtn" class="btn-primary" type="button">提交 JSON</button>
+            <span id="jsonStatus" class="upload-status"></span>
+          </div>
+        </div>
+
+        <!-- Mode: upload file -->
+        <div id="uploadFile" class="upload-pane" hidden>
+          <label class="upload-drop" id="fileDrop">
+            <input id="fileInput" type="file" accept=".json,application/json" multiple hidden />
+            <span class="upload-drop-icon">⬆</span>
+            <span>点击或拖拽 JSON 文件到此处（可多选，批量导入）</span>
+          </label>
+          <div class="upload-mode-row">
+            <label class="admin-check">
+              <input id="replaceMode" type="checkbox" /> 覆盖模式（替换整个作品库，否则为追加）
+            </label>
+          </div>
+          <div id="filePreview" class="upload-file-list"></div>
+          <div class="upload-submit-row">
+            <button id="submitFileBtn" class="btn-primary" type="button" disabled>上传所选文件</button>
+            <span id="fileStatus" class="upload-status"></span>
+          </div>
+        </div>
+
+        <!-- Mode: Tencent COS import -->
+        <div id="uploadCos" class="upload-pane" hidden>
+          <p class="admin-muted upload-hint">
+            输入 COS 对象路径（Prefix，例如 <code>dramas/我的短剧/</code>），系统会扫描该路径下的所有视频文件，按集号从小到大排序后上架，并取路径下的 jpg 图片作为封面。
+          </p>
+          <div class="form-grid">
+            <label class="form-field form-field-wide">
+              <span>COS 对象路径 (Prefix) *</span>
+              <input id="cosPrefix" type="text" placeholder="dramas/my-drama/" />
+            </label>
+            <label class="form-field">
+              <span>作品名称</span>
+              <input id="cosTitle" type="text" placeholder="留空则取路径最后一段" />
+            </label>
+            <label class="form-field">
+              <span>自定义作品 ID</span>
+              <input id="cosId" type="text" placeholder="留空自动根据作品名生成" />
+            </label>
+            <label class="form-field">
+              <span>分类</span>
+              <input id="cosCategory" type="text" placeholder="如 都市 / 古装（默认: 短剧）" />
+            </label>
+            <label class="form-field">
+              <span>作者</span>
+              <input id="cosAuthor" type="text" placeholder="作者名" />
+            </label>
+            <label class="form-field form-field-wide">
+              <span>作品描述</span>
+              <input id="cosDescription" type="text" placeholder="作品简介" />
+            </label>
+          </div>
+          <div class="upload-submit-row">
+            <button id="cosPreviewBtn" class="btn-secondary" type="button">🔍 预览扫描结果</button>
+            <button id="cosImportBtn" class="btn-primary" type="button">☁️ 导入到作品库</button>
+            <span id="cosStatus" class="upload-status"></span>
+          </div>
+          <div id="cosPreview" class="cos-preview" hidden></div>
+        </div>
+      </section>
+
+      <!-- Existing library -->
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>🎬 已上传作品库</h2>
+          <button id="reloadLibraryBtn" class="btn-secondary" type="button">刷新列表</button>
+        </div>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>作品 ID</th>
+              <th>标题</th>
+              <th>分类</th>
+              <th class="num">集数</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="libraryTbody"></tbody>
+        </table>
+      </section>
+    </main>
   </section>
+
+  <!-- Template: one series form (cloned by JS) -->
+  <template id="seriesFormTpl">
+    <div class="series-form" data-series>
+      <div class="series-form-head">
+        <strong class="series-form-title">作品</strong>
+        <button type="button" class="series-form-del" data-del-series>✕ 删除</button>
+      </div>
+      <div class="form-grid">
+        <label class="form-field">
+          <span>作品 ID *</span>
+          <input type="text" data-f="id" placeholder="唯一ID，如 my_drama_01" />
+        </label>
+        <label class="form-field">
+          <span>标题</span>
+          <input type="text" data-f="title" placeholder="作品名称" />
+        </label>
+        <label class="form-field">
+          <span>分类</span>
+          <input type="text" data-f="category" placeholder="如 都市 / 古装" />
+        </label>
+        <label class="form-field">
+          <span>作者</span>
+          <input type="text" data-f="author" placeholder="作者名" />
+        </label>
+        <label class="form-field form-field-wide">
+          <span>封面图 URL</span>
+          <input type="text" data-f="thumbnail" placeholder="https://..." />
+        </label>
+        <label class="form-field form-field-wide">
+          <span>描述</span>
+          <input type="text" data-f="description" placeholder="作品简介" />
+        </label>
+      </div>
+      <div class="episodes-wrap">
+        <div class="episodes-head">
+          <span>剧集列表</span>
+          <button type="button" class="btn-secondary btn-sm" data-add-ep>＋ 添加一集</button>
+        </div>
+        <div class="episodes-list" data-eps></div>
+      </div>
+    </div>
+  </template>
+
+  <!-- Template: one episode row -->
+  <template id="episodeRowTpl">
+    <div class="episode-row" data-ep>
+      <input type="number" class="ep-num" data-f="ep" placeholder="集号" min="1" value="1" />
+      <input type="text" class="ep-title" data-f="title" placeholder="第N集 标题" />
+      <input type="text" class="ep-src" data-f="src" placeholder="视频地址 URL *" />
+      <button type="button" class="ep-del" data-del-ep>✕</button>
+    </div>
+  </template>
 
   <script src="videos.js"></script>
   <script src="admin.js"></script>
