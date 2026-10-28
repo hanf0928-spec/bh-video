@@ -331,11 +331,26 @@
    */
   function trackAd(slot, event) {
     if (!slot || !event) return;
+    const payload = JSON.stringify({ slot: slot, event: event });
+    try {
+      // Prefer sendBeacon: it fires-and-forgets without blocking the
+      // page or waiting on the server, so a slow /api/ads/track can
+      // never stall navigation or the 15s fetch timeout. The endpoint
+      // answers in <1ms (in-memory counter + async disk flush), so the
+      // beacon reliably lands even on page unload.
+      if (navigator.sendBeacon) {
+        const blob = new Blob([payload], { type: "application/json" });
+        if (navigator.sendBeacon("/api/ads/track", blob)) return;
+      }
+    } catch (_) {
+      /* fall through to fetch */
+    }
+    // Fallback for browsers without sendBeacon — non-blocking, silent.
     try {
       fetch("/api/ads/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ slot: slot, event: event }),
+        body: payload,
         keepalive: true,
       }).catch(() => {});
     } catch (_) {

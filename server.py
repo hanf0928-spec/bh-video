@@ -45,6 +45,7 @@ Run
 """
 
 import datetime
+import functools
 import gzip
 import hashlib
 import json
@@ -876,22 +877,71 @@ def _build_series_batch_from_cos(parent_prefix, category, author):
 # Ads stats persistence (ads_stats.json)
 # ---------------------------------------------------------------------------
 
+# In-memory cache of the ad stats dict. The on-disk JSON is only the
+# durable backing store; live reads/writes go through this dict so a
+# single /api/ads/track call never blocks on a disk round-trip (which
+# previously caused 15s timeouts under cloud-disk I/O jitter).
+_ads_stats_cache = None
+_ads_stats_dirty = False
+
 def _load_ads_stats():
-    """Shape: { "<slot>": { "impressions": N, "clicks": N }, ... }"""
-    if not os.path.isfile(ADS_STATS_FILE):
-        return {}
-    try:
-        with open(ADS_STATS_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
+    """Shape: { "<slot>": { "impressions": N, "clicks": N }, ... }
+
+    Returns the shared in-memory cache, loading it from disk on first
+    access. Subsequent calls are O(1) and never touch the filesystem.
+    """
+    global _ads_stats_cache
+    if _ads_stats_cache is not None:
+        return _ads_stats_cache
+    data = {}
+    if os.path.isfile(ADS_STATS_FILE):
+        try:
+            with open(ADS_STATS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError):
+            data = {}
+    _ads_stats_cache = data
+    return data
 
 def _save_ads_stats(stats):
+    """Persist ad stats to disk on a background thread.
+
+    Updates the in-memory cache synchronously (so the very next request
+    sees the new count) but hands the actual file write to a daemon
+    thread. This keeps /api/ads/track latency sub-millisecond even when
+    the disk is slow — the HTTP response is sent BEFORE the write, so a
+    jittery cloud volume can never stall the request thread.
+    """
+    global _ads_stats_dirty
+    _ads_stats_cache = stats
+    _ads_stats_dirty = True
+    try:
+        t = threading.Thread(target=_flush_ads_stats, daemon=True)
+        t.start()
+    except Exception:
+        # If we can't spawn a thread, fall back to a blocking write so
+        # we never lose the increment entirely.
+        _flush_ads_stats()
+
+def _flush_ads_stats():
+    """Synchronous disk write of the current ad-stats cache."""
+    global _ads_stats_dirty
+    stats = _ads_stats_cache
+    if stats is None:
+        return
     tmp_path = ADS_STATS_FILE + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2, sort_keys=True)
-    os.replace(tmp_path, ADS_STATS_FILE)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2, sort_keys=True)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, ADS_STATS_FILE)
+        _ads_stats_dirty = False
+    except OSError:
+        # Best-effort: leave the dirty flag set so a later flush retries.
+        pass
 
 def _ensure_ad_entry(stats, slot):
     entry = stats.get(slot)
@@ -1113,6 +1163,22 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
     # a cold tab this saves 6-10 TLS handshakes.
     protocol_version = "HTTP/1.1"
 
+    # ---- gzip cache (module-level) ---------------------------------------
+    # Compressing the same .js/.css on every request wastes CPU and, under
+    # CPython's GIL, serialises concurrent static-asset requests (which is
+    # exactly why player.js could take seconds). We memoize on the file's
+    # (path, mtime, size): a new deploy bumps ?v= but keeps the path, so a
+    # changed file is detected via mtime/size and re-compressed once.
+    @staticmethod
+    @functools.lru_cache(maxsize=64)
+    def _gzip_cached(fs_path, mtime, size):
+        try:
+            with open(fs_path, "rb") as f:
+                raw = f.read()
+            return gzip.compress(raw, compresslevel=6)
+        except OSError:
+            return b""
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT_DIR, **kwargs)
 
@@ -1171,9 +1237,9 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
     def _try_serve_gzipped_static(self):
         """
         If the request is for a gzip-eligible static text file and the
-        client advertises gzip support, read the file, gzip it, and
-        write the whole response here. Returns True when handled, False
-        when the default static handler should run.
+        client advertises gzip support, serve a (cached) gzipped body in
+        ONE write(). Returns True when handled, False when the default
+        static handler should run.
 
         This replaces the default ``shutil.copyfileobj`` streaming for
         text assets, which on the stock Python ``http.server`` has been
@@ -1181,6 +1247,12 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         the 16-KiB blocking writes don't play well with small TCP
         windows. For 25 KiB of JS we'd rather pay ~5 ms of CPU to gzip
         it to 8 KiB and ship it in ONE write().
+
+        The gzip payload is memoized by (path, mtime, size) so concurrent
+        requests for the same asset (e.g. player.js fetched by 10 tabs)
+        share ONE compressed buffer instead of each re-compressing under
+        the GIL — that serialization was the root cause of multi-second
+        player.js latency.
         """
         try:
             path = self._path_lower()
@@ -1196,25 +1268,32 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             if size < self._GZIP_MIN_BYTES:
                 return False
 
-            with open(fs_path, "rb") as f:
-                raw = f.read()
-            body = gzip.compress(raw, compresslevel=6)
+            mtime = os.path.getmtime(fs_path)
+            body = self._gzip_cached(fs_path, mtime, size)
+            if not body:
+                return False  # read error — fall back to stock handler
 
             ctype = self.guess_type(fs_path)
-            try:
-                mtime = datetime.datetime.utcfromtimestamp(
-                    os.path.getmtime(fs_path)
-                ).strftime("%a, %d %b %Y %H:%M:%S GMT")
-            except Exception:
-                mtime = None
+            last_mod = datetime.datetime.utcfromtimestamp(mtime).strftime(
+                "%a, %d %b %Y %H:%M:%S GMT"
+            )
+
+            # Respect conditional GETs — if the browser already has this
+            # exact file cached (matched on mtime), answer 304 with no
+            # body instead of re-shipping 8 KiB over a slow link.
+            since = self.headers.get("If-Modified-Since")
+            if since and since.strip() == last_mod:
+                self.send_response(HTTPStatus.NOT_MODIFIED)
+                self.send_header("Last-Modified", last_mod)
+                self.end_headers()
+                return True
 
             self.send_response(HTTPStatus.OK)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Vary", "Accept-Encoding")
-            if mtime:
-                self.send_header("Last-Modified", mtime)
+            self.send_header("Last-Modified", last_mod)
             # Cache-Control is injected by our overridden end_headers().
             self.end_headers()
             self.wfile.write(body)
