@@ -721,14 +721,22 @@
     const filtered = !q
       ? list.slice(0, 20)
       : list.filter((v) => {
-          const title = i18n.pickLocalized(v, "title") || "";
-          const desc = i18n.pickLocalized(v, "description") || "";
-          const tagsText = (Array.isArray(v.tags) ? v.tags : []).join(" ");
-          return (
-            title.toLowerCase().includes(q) ||
-            desc.toLowerCase().includes(q) ||
-            tagsText.toLowerCase().includes(q)
-          );
+          const hay = [];
+          // Primary localized title / description.
+          hay.push(i18n.pickLocalized(v, "title") || "");
+          hay.push(i18n.pickLocalized(v, "description") || "");
+          // Every other language block (zh / en / …) so cross-language
+          // queries match once titles are localized.
+          const i18nObj = v.i18n || {};
+          Object.keys(i18nObj).forEach((lang) => {
+            const blk = i18nObj[lang] || {};
+            if (blk.title) hay.push(blk.title);
+            if (blk.description) hay.push(blk.description);
+          });
+          hay.push((Array.isArray(v.tags) ? v.tags : []).join(" "));
+          hay.push(v.category || "");
+          hay.push(v.author || "");
+          return hay.join(" ").toLowerCase().includes(q);
         });
 
     if (!filtered.length) {
