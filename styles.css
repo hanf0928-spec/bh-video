@@ -1734,6 +1734,16 @@ body.feed-page .feed-item .feed-playpause {
   100% { transform: scale(1); }
 }
 
+/* Once a viewer has liked a series, the heart becomes a one-way
+   indicator: keep it fully opaque (no browser-default grey "disabled"
+   wash) and swap the cursor so repeat taps feel inert instead of
+   broken. The visual state (red) is already carried by `.liked`. */
+.feed-side-btn.feed-like[disabled] {
+  cursor: default;
+  opacity: 1;
+  pointer-events: none;
+}
+
 .feed-side-label {
   font-size: 12px;
   font-weight: 600;

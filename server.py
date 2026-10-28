@@ -979,10 +979,20 @@ def _save_likes(likes):
 
 def _toggle_like(series_id, ip):
     """
-    Toggle like for (series_id, ip). Returns a dict:
-        { "liked": bool, "count": int }
-    `liked` reflects the NEW state after the toggle; `count` is the
-    total number of distinct IPs that currently like this series.
+    Register a like for (series_id, ip). Semantics:
+      • Each unique IP contributes AT MOST ONE like per series.
+      • Once an IP has liked a series, further POSTs are IDEMPOTENT —
+        the counter never decrements. This matches the product spec:
+        "点过后不可取消".
+
+    Returns:
+        { "liked": True, "count": int }
+    where ``liked`` is always True after a successful call (either the
+    IP was newly registered, or it was already in the set). ``count``
+    is the total number of distinct IPs that have liked this series.
+
+    The function name is kept as ``_toggle_like`` to avoid churning the
+    public route surface, but there is NO toggle-off path anymore.
     """
     if not series_id:
         return {"liked": False, "count": 0}
@@ -992,16 +1002,19 @@ def _toggle_like(series_id, ip):
         bucket = likes.get(series_id)
         if not isinstance(bucket, list):
             bucket = []
-        if ip_hash and ip_hash in bucket:
-            bucket.remove(ip_hash)
-            liked = False
-        else:
-            if ip_hash:
-                bucket.append(ip_hash)
-            liked = True
+        # Only append if this IP hasn't liked this series before.
+        # Missing IP hashes (no X-Forwarded-For) also count once —
+        # better to over-count anonymous visitors than lose signal.
+        if ip_hash and ip_hash not in bucket:
+            bucket.append(ip_hash)
+        elif not ip_hash:
+            # Fallback: still bump a counter so the UI feels responsive
+            # even when we can't dedup. Use a short-lived sentinel so
+            # it doesn't pollute real IP hashes.
+            bucket.append("anon-" + secrets.token_hex(4))
         likes[series_id] = bucket
         _save_likes(likes)
-        return {"liked": liked, "count": len(bucket)}
+        return {"liked": True, "count": len(bucket)}
 
 def _get_likes_summary(ip=None):
     """

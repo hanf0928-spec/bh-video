@@ -192,14 +192,18 @@
       .catch(() => {});
   }
 
-  /** Toggle like on the server; optimistically update every card. */
+  /**
+   * Register a like for a series. ONE-WAY per spec: once this viewer
+   * has liked the series, further taps are a no-op (no decrement).
+   * Because every episode card for the SAME series shares the ❤ data,
+   * paintLikesForSeries() mirrors the new count to every card at once.
+   */
   function toggleLike(seriesId) {
     if (!seriesId) return;
     const prev = likesState.get(seriesId) || { count: 0, liked: false };
-    const next = {
-      count: prev.liked ? Math.max(0, prev.count - 1) : prev.count + 1,
-      liked: !prev.liked,
-    };
+    if (prev.liked) return; // Already liked — nothing to do.
+
+    const next = { count: prev.count + 1, liked: true };
     likesState.set(seriesId, next);
     paintLikesForSeries(seriesId);
 
@@ -214,14 +218,18 @@
         if (!data || !data.ok) return;
         likesState.set(seriesId, {
           count: Number(data.count) || 0,
-          liked: !!data.liked,
+          liked: true,
         });
         paintLikesForSeries(seriesId);
       })
       .catch(() => {});
   }
 
-  /** Repaint EVERY like button on the page that targets this series. */
+  /**
+   * Repaint EVERY like button on the page that targets this series —
+   * because all episodes of one drama share a single ❤ counter, this
+   * keeps every card visually in sync.
+   */
   function paintLikesForSeries(seriesId) {
     const state = likesState.get(seriesId) || { count: 0, liked: false };
     const btns = feedEl.querySelectorAll(
@@ -229,6 +237,10 @@
     );
     btns.forEach((btn) => {
       btn.classList.toggle("liked", !!state.liked);
+      if (state.liked) {
+        btn.setAttribute("disabled", "disabled");
+        btn.setAttribute("aria-pressed", "true");
+      }
       const label = btn.querySelector("[data-like-count]");
       if (label) label.textContent = formatCount(state.count || 0);
     });
@@ -346,7 +358,9 @@
       <div class="feed-side">
         <button class="feed-side-btn feed-like${
           likeInfo.liked ? " liked" : ""
-        }" type="button" aria-label="点赞">
+        }" type="button" aria-label="点赞"${
+          likeInfo.liked ? ' disabled aria-pressed="true"' : ""
+        }>
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -521,19 +535,15 @@
       showCardError(item, msg);
     });
 
-    // Like toggle — persist on the backend and sync every like
-    // button for this series on the current page.
+    // Like — one-way, once liked never un-liked. All episode cards for
+    // this series share one ❤ counter, so paintLikesForSeries() keeps
+    // them synced visually.
     likeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      const before = likesState.get(seriesId);
+      if (before && before.liked) return; // Idempotent — ignore repeat taps.
       toggleLike(seriesId);
-      // Local toast feedback mirrors the state we just optimistically
-      // committed to likesState.
-      const stateAfter = likesState.get(seriesId);
-      showToast(
-        stateAfter && stateAfter.liked
-          ? t("toast.likeAdded")
-          : t("toast.likeRemoved")
-      );
+      showToast(t("toast.likeAdded"));
     });
 
     // Share the direct deep-link to this episode.
