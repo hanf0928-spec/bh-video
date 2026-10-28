@@ -193,16 +193,18 @@
   }
 
   /**
-   * Register a like for a series. ONE-WAY per spec: once this viewer
-   * has liked the series, further taps are a no-op (no decrement).
-   * Because every episode card for the SAME series shares the ❤ data,
+   * Register a like TAP for a series. Simplified additive model:
+   *   • every tap increments the counter by 1 — no per-user cap, so a
+   *     viewer can tap as many times as they want;
+   *   • the red heart is a purely LOCAL visual (set on tap in this
+   *     session, resets on refresh) — the server only stores a global
+   *     count, not "who liked".
+   * Because all episode cards of the SAME series share one ❤ counter,
    * paintLikesForSeries() mirrors the new count to every card at once.
    */
   function toggleLike(seriesId) {
     if (!seriesId) return;
     const prev = likesState.get(seriesId) || { count: 0, liked: false };
-    if (prev.liked) return; // Already liked — nothing to do.
-
     const next = { count: prev.count + 1, liked: true };
     likesState.set(seriesId, next);
     paintLikesForSeries(seriesId);
@@ -237,10 +239,8 @@
     );
     btns.forEach((btn) => {
       btn.classList.toggle("liked", !!state.liked);
-      if (state.liked) {
-        btn.setAttribute("disabled", "disabled");
-        btn.setAttribute("aria-pressed", "true");
-      }
+      if (state.liked) btn.setAttribute("aria-pressed", "true");
+      else btn.removeAttribute("aria-pressed");
       const label = btn.querySelector("[data-like-count]");
       if (label) label.textContent = formatCount(state.count || 0);
     });
@@ -358,9 +358,7 @@
       <div class="feed-side">
         <button class="feed-side-btn feed-like${
           likeInfo.liked ? " liked" : ""
-        }" type="button" aria-label="点赞"${
-          likeInfo.liked ? ' disabled aria-pressed="true"' : ""
-        }>
+        }" type="button" aria-label="点赞">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -535,13 +533,11 @@
       showCardError(item, msg);
     });
 
-    // Like — one-way, once liked never un-liked. All episode cards for
-    // this series share one ❤ counter, so paintLikesForSeries() keeps
-    // them synced visually.
+    // Like — additive tap counter. Each click adds 1; the heart turns
+    // red locally for this session. All episode cards for this series
+    // share one ❤ counter, so paintLikesForSeries() keeps them synced.
     likeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      const before = likesState.get(seriesId);
-      if (before && before.liked) return; // Idempotent — ignore repeat taps.
       toggleLike(seriesId);
       showToast(t("toast.likeAdded"));
     });

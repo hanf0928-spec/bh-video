@@ -956,10 +956,11 @@ def _record_visit(ip):
 # ---------------------------------------------------------------------------
 # Likes persistence (likes.json)
 # ---------------------------------------------------------------------------
-# Shape: { "<seriesId>": ["<ip-hash>", "<ip-hash>", ...], ... }
-# A viewer liking a series multiple times from the same IP only counts
-# once; tapping the heart again removes their hash (toggle semantics).
-# This matches the H5 feed experience: red = you liked, grey = you didn't.
+# Shape: { "<seriesId>": <int count>, ... }
+# Simplified model: every tap of the heart increments the counter by 1.
+# There is NO per-user dedup / "one like per IP" check — the heart is a
+# pure, additive tap counter (fire-and-forget +1 per click). The red
+# "liked" visual state is tracked only locally in the browser session.
 
 def _load_likes():
     if not os.path.isfile(LIKES_FILE):
@@ -971,67 +972,91 @@ def _load_likes():
     except (OSError, ValueError):
         return {}
 
+def _migrate_likes():
+    """
+    One-off data migration (best-effort, idempotent).
+
+    Older builds stored likes as a per-series LIST of hashed IPs:
+        { "<seriesId>": ["<hash>", "<hash>", ...] }
+    The simplified model keeps just a plain INTEGER counter:
+        { "<seriesId>": <int> }
+    This collapses any pre-existing list into its length so historical
+    like counts are NOT lost on upgrade. Runs once at process start;
+    safe to call even when the file is already in the new shape.
+    """
+    if not os.path.isfile(LIKES_FILE):
+        return
+    try:
+        with open(LIKES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict):
+        return
+    migrated = False
+    for sid, val in list(data.items()):
+        if isinstance(val, list):
+            data[sid] = len(val)
+            migrated = True
+        elif not isinstance(val, int):
+            # Drop unrecognised shapes rather than crashing downstream.
+            data.pop(sid, None)
+            migrated = True
+    if migrated:
+        try:
+            _save_likes(data)
+        except OSError:
+            pass
+
 def _save_likes(likes):
     tmp_path = LIKES_FILE + ".tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(likes, f, ensure_ascii=False, indent=2, sort_keys=True)
     os.replace(tmp_path, LIKES_FILE)
 
-def _toggle_like(series_id, ip):
+def _toggle_like(series_id, ip=None):
     """
-    Register a like for (series_id, ip). Semantics:
-      • Each unique IP contributes AT MOST ONE like per series.
-      • Once an IP has liked a series, further POSTs are IDEMPOTENT —
-        the counter never decrements. This matches the product spec:
-        "点过后不可取消".
+    Register a like for (series_id). Simplified semantics:
+      • EVERY call increments the counter by exactly 1.
+      • No IP dedup, no "one like per user" rule — it's a pure additive
+        tap counter. The `ip` argument is accepted for backward
+        compatibility with the route handler but is no longer used.
 
     Returns:
         { "liked": True, "count": int }
-    where ``liked`` is always True after a successful call (either the
-    IP was newly registered, or it was already in the set). ``count``
-    is the total number of distinct IPs that have liked this series.
-
+    where ``count`` is the total number of taps recorded for this series.
     The function name is kept as ``_toggle_like`` to avoid churning the
-    public route surface, but there is NO toggle-off path anymore.
+    public route surface.
     """
     if not series_id:
         return {"liked": False, "count": 0}
-    ip_hash = _hash_ip(ip or "")
     with _likes_lock:
         likes = _load_likes()
-        bucket = likes.get(series_id)
-        if not isinstance(bucket, list):
-            bucket = []
-        # Only append if this IP hasn't liked this series before.
-        # Missing IP hashes (no X-Forwarded-For) also count once —
-        # better to over-count anonymous visitors than lose signal.
-        if ip_hash and ip_hash not in bucket:
-            bucket.append(ip_hash)
-        elif not ip_hash:
-            # Fallback: still bump a counter so the UI feels responsive
-            # even when we can't dedup. Use a short-lived sentinel so
-            # it doesn't pollute real IP hashes.
-            bucket.append("anon-" + secrets.token_hex(4))
-        likes[series_id] = bucket
+        # Stored value is now a plain integer counter.
+        cur = likes.get(series_id)
+        cur = cur if isinstance(cur, int) else 0
+        likes[series_id] = cur + 1
         _save_likes(likes)
-        return {"liked": True, "count": len(bucket)}
+        return {"liked": True, "count": cur + 1}
 
 def _get_likes_summary(ip=None):
     """
     Return a dict for every series known in likes.json:
         { "<seriesId>": { "count": int, "liked_by_me": bool } }
-    If `ip` is None, `liked_by_me` is always False (public read).
+    The `count` is a plain additive tap counter. `liked_by_me` is always
+    False now — the simplified model does not track per-user likes, so
+    the client cannot know "did *I* like this". The red heart state is
+    tracked only in the browser's local session.
     """
-    ip_hash = _hash_ip(ip or "") if ip else ""
     with _likes_lock:
         likes = _load_likes()
     out = {}
-    for sid, bucket in (likes or {}).items():
-        if not isinstance(bucket, list):
+    for sid, count in (likes or {}).items():
+        if not isinstance(count, int):
             continue
         out[sid] = {
-            "count": len(bucket),
-            "liked_by_me": bool(ip_hash) and ip_hash in bucket,
+            "count": count,
+            "liked_by_me": False,
         }
     return out
 
@@ -1320,8 +1345,9 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         if path == "/api/likes":
             # Public summary of likes. Shape per series:
             #   { "<seriesId>": { "count": int, "liked_by_me": bool } }
-            # `liked_by_me` is derived from the caller's IP so the H5
-            # feed can paint the heart red immediately on page load.
+            # `count` is a plain additive tap counter. `liked_by_me` is
+            # now always False (no per-user tracking), so the heart's
+            # red state is decided purely by the client's local session.
             summary = _get_likes_summary(self._client_ip())
             self._send_json(HTTPStatus.OK, summary)
             return
@@ -2042,18 +2068,18 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         total_clk = sum(v["clicks"] for v in ads_payload.values())
 
         # Likes ranking: sort every series that has ever been liked by
-        # descending unique-IP count. Entries missing from the library
+        # descending tap count. Entries missing from the library
         # (e.g. a series was deleted after being liked) still appear
         # with the raw id as title so the admin can clean them up.
         likes_items = []
-        for sid, bucket in (likes_raw or {}).items():
-            if not isinstance(bucket, list):
+        for sid, count in (likes_raw or {}).items():
+            if not isinstance(count, int):
                 continue
             likes_items.append(
                 {
                     "id": sid,
                     "title": title_by_id.get(sid, sid),
-                    "count": len(bucket),
+                    "count": count,
                 }
             )
         likes_items.sort(key=lambda x: (-x["count"], x["title"]))
@@ -2107,6 +2133,11 @@ def main():
             sys.exit(2)
 
     bind = "0.0.0.0"
+
+    # Collapse any legacy per-series IP-list likes into plain counters
+    # before the server starts answering requests.
+    _migrate_likes()
+
     server = ThreadingHTTPServer((bind, port), BHVideoHandler)
     print("BH-video server running at http://%s:%d/" % (bind, port))
     print("Stats file:    %s" % DATA_FILE)

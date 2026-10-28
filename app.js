@@ -131,12 +131,23 @@
    * with the server's authoritative count (handles cases where other
    * viewers liked the same series concurrently).
    */
+  /**
+   * Register a like tap for a series. Simplified, additive model:
+   *   • every tap increments the counter by 1 (fire-and-forget);
+   *   • no "one like per user" check — anyone can tap as many times
+   *     as they like, each tap adds 1;
+   *   • the red heart is a PURELY LOCAL visual: once THIS browser has
+   *     tapped, it stays red for the session, but it is NOT persisted
+   *     server-side and resets on refresh (the server only stores a
+   *     global count, not "who liked").
+   *
+   * We optimistically bump the UI, fire the request, then reconcile
+   * with the server's authoritative count (handles other viewers
+   * tapping the same series concurrently).
+   */
   function toggleLike(seriesId, likeBtn, labelEl) {
     if (!seriesId) return;
     const prev = likesState.get(seriesId) || { count: 0, liked: false };
-    // One-shot: if this visitor already liked, do nothing.
-    if (prev.liked) return;
-
     const next = { count: prev.count + 1, liked: true };
     likesState.set(seriesId, next);
     paintLike(likeBtn, labelEl, next);
@@ -152,8 +163,6 @@
         if (!data || !data.ok) return;
         const authoritative = {
           count: Number(data.count) || 0,
-          // Server always returns liked=true after a successful POST,
-          // but belt-and-braces: once true, stay true.
           liked: true,
         };
         likesState.set(seriesId, authoritative);
@@ -164,17 +173,16 @@
 
   /**
    * Apply visual state (red heart + numeric label) to a like button.
-   * Once liked, the button is disabled so repeated taps don't fire
-   * further requests (and the cursor hint matches the one-shot UX).
+   * The red state is driven by the local `liked` flag (set on tap in
+   * this session); it is intentionally NOT disabled, so repeated taps
+   * keep incrementing the counter.
    */
   function paintLike(btn, label, state) {
     if (!btn) return;
     const liked = !!(state && state.liked);
     btn.classList.toggle("liked", liked);
-    if (liked) {
-      btn.setAttribute("disabled", "disabled");
-      btn.setAttribute("aria-pressed", "true");
-    }
+    if (liked) btn.setAttribute("aria-pressed", "true");
+    else btn.removeAttribute("aria-pressed");
     if (label) label.textContent = formatCount((state && state.count) || 0);
   }
 
@@ -324,9 +332,7 @@
       <div class="feed-side">
         <button class="feed-side-btn feed-like${
           likeInfo.liked ? " liked" : ""
-        }" type="button" aria-label="点赞"${
-          likeInfo.liked ? ' disabled aria-pressed="true"' : ""
-        }>
+        }" type="button" aria-label="点赞">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
