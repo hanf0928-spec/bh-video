@@ -478,11 +478,24 @@
       body: JSON.stringify(body),
     })
       .then(function (r) {
+        // Session on the server was wiped (service restart / 8h TTL).
+        // Kick the user back to the login box so they can grab a fresh
+        // token instead of staring at a confusing "unauthorized" line.
+        if (r.status === 401) {
+          setToken("");
+          showLogin();
+          cosStatus.textContent = "会话已过期，请重新登录";
+          cosStatus.className = "upload-status err";
+          cosPreviewBtn.disabled = false;
+          cosImportBtn.disabled = false;
+          return null;
+        }
         return r.json().then(function (d) {
           return { ok: r.ok && d.ok, d: d };
         });
       })
       .then(function (res) {
+        if (res === null) return;
         cosPreviewBtn.disabled = false;
         cosImportBtn.disabled = false;
         cb(res);
@@ -649,11 +662,21 @@
       body: JSON.stringify(body),
     })
       .then(function (r) {
+        if (r.status === 401) {
+          setToken("");
+          showLogin();
+          cosBatchStatus.textContent = "会话已过期，请重新登录";
+          cosBatchStatus.className = "upload-status err";
+          cosBatchPreviewBtn.disabled = false;
+          cosBatchImportBtn.disabled = false;
+          return null;
+        }
         return r.json().then(function (d) {
           return { ok: r.ok && d.ok, d: d };
         });
       })
       .then(function (res) {
+        if (res === null) return;
         cosBatchPreviewBtn.disabled = false;
         cosBatchImportBtn.disabled = false;
         cb(res);
