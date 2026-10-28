@@ -320,25 +320,19 @@
    * carry per-episode `src` URLs — those are generated on demand on
    * the player page — so we always hand off at ep=1, t=0 and let the
    * player page fetch /api/library/<id> for the real playback data.
+   *
+   * We also report an "open" event before navigating so the admin
+   * dashboard's video "打开数" counter reflects every click on a
+   * series card. Uses `fetch({ keepalive: true })` so the request
+   * survives the page navigation (otherwise the browser cancels
+   * in-flight XHRs when location.href changes).
    */
   function openPlayerForItem(item) {
     const seriesId = item.dataset.seriesId;
     if (!seriesId) return;
-    const url =
-      "player.html?id=" + encodeURIComponent(seriesId) + "&ep=1";
-    window.location.href = url;
-  }
-
-  /**
-   * Jump from the home feed to the full player page for ONE series.
-   * The home catalog response (via /api/library/catalog) does not
-   * carry per-episode `src` URLs — those are generated on demand on
-   * the player page — so we always hand off at ep=1, t=0 and let the
-   * player page fetch /api/library/<id> for the real playback data.
-   */
-  function openPlayerForItem(item) {
-    const seriesId = item.dataset.seriesId;
-    if (!seriesId) return;
+    // Fire-and-forget "open" telemetry for episode 1. keepalive=true
+    // keeps it alive across the imminent navigation.
+    reportStat(seriesId, 1, "open");
     const url =
       "player.html?id=" + encodeURIComponent(seriesId) + "&ep=1";
     window.location.href = url;
@@ -424,6 +418,18 @@
       deactivateItem(other)
     );
     item.classList.add("is-active");
+
+    // Fire an "open" telemetry event the FIRST time this card becomes
+    // active in this session, so swiping through the home feed still
+    // populates the admin dashboard's "打开数" counter (previously only
+    // player.html reported anything). A dataset flag debounces repeat
+    // activations so sliding back and forth on the same card doesn't
+    // inflate the count.
+    if (!item.dataset.openReported) {
+      item.dataset.openReported = "1";
+      const seriesId = item.dataset.seriesId;
+      if (seriesId) reportStat(seriesId, 1, "open");
+    }
   }
 
   function deactivateItem(item) {

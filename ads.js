@@ -6,24 +6,27 @@
      2) Bottom banner ad   → image/gif at the bottom of the page
      3) Floating box ad    → fixed small image/gif in a corner
      4) Pre-roll video ad  → full-screen video that plays BEFORE
-                             the main video. Trigger rule:
-                               • first `warmupEpisodes` episodes in
-                                 the browser are ad-free;
-                               • after that, an ad plays every
-                                 `everyEpisodes` episodes.
-                             Default: warmup=5, every=3 → ads fire on
-                             the 6th, 9th, 12th, 15th… episode opens.
-                             The ad overlay stays for `skipAfter`
-                             seconds, then the close/skip button is
-                             enabled.
+                             the main video.
+
+   Pre-roll trigger rule (defaults: firstAfterEpisodes=5, everySeries=3):
+     Phase 1 — No ad has ever fired yet:
+       • Episodes #1..#5 of the FIRST series the viewer watches
+         are ad-free.
+       • Episode #6 of that same series triggers the FIRST ad.
+     Phase 2 — The first ad has already fired:
+       • Every `everySeries` NEW series opens triggers an ad.
+       • Switching episodes within the same series never triggers
+         an ad in phase 2.
+     The ad overlay stays for `skipAfter` seconds, then the
+     close/skip button becomes enabled.
 
    All configuration lives in `AD_CONFIG`. Replace the URLs there
    with real campaigns. Click targets open in a new tab.
 
-   The episode counter is persisted in localStorage under
-   `bhv.adEpisodeCount`. It is incremented every time player.js
-   opens a NEW episode via BHAds.notifyEpisodeOpen() (same-episode
-   refreshes do not count).
+   State is persisted in localStorage under `bhv.adState.v2` as a
+   small JSON blob (see `readState()` for its shape). Bumping the
+   `v2` suffix in STATE_KEY wipes it, so switching rule schemes in
+   the future won't collide with user-side cached state.
    ========================================================= */
 
 (function () {
@@ -58,13 +61,21 @@
       width: 200,
       height: 200,
     },
-    // Pre-roll ad shown on player.html. Rule:
-    //   • the first `warmupEpisodes` episodes opened in this browser
-    //     are ad-free (grace period for new viewers);
-    //   • after the grace period, an ad plays every `everyEpisodes`
-    //     episodes.
-    // With warmup=5 + every=3 the ad fires on the 6th, 9th, 12th,
-    // 15th… episode opens.
+    // Pre-roll ad shown on player.html.
+    //
+    // New rule (per product spec):
+    //   • Phase 1 (first time ever in this browser)
+    //       → the ad fires on the (`firstAfterEpisodes` + 1)-th episode
+    //         opened. With `firstAfterEpisodes: 5` that's episode #6.
+    //         Episodes 1..5 of the FIRST series the user watches are
+    //         ad-free.
+    //   • Phase 2 (after the first ad)
+    //       → the ad fires once every `everySeries` NEW series. With
+    //         `everySeries: 3` that's: open 3rd new series → ad,
+    //         6th new series → ad, 9th → ad, …
+    //
+    // Switching episodes within the same series in phase 2 never
+    // triggers an ad — only crossing to a brand-new series id counts.
     preRoll: {
       enabled: true,
       video:
@@ -77,15 +88,19 @@
       // Ad must stay on screen at least this many seconds; after
       // that the close/skip button becomes clickable.
       skipAfter: 5,
-      // Ad-free grace period at the start of a browser session.
-      warmupEpisodes: 5,
-      // Trigger an ad once every N episodes AFTER the grace period.
-      everyEpisodes: 3,
+      // Phase 1: fire the first-ever ad after this many ad-free
+      // episodes within the first watched series.
+      firstAfterEpisodes: 5,
+      // Phase 2: after the first ad, fire again every N new series.
+      everySeries: 3,
       label: "广告 · Ad",
     },
   };
 
-  const COUNTER_KEY = "bhv.adEpisodeCount";
+  // Storage keys. Bumping the version suffix wipes any state users
+  // might carry from the older per-episode counter rule so they land
+  // on the new (series-based) schedule cleanly.
+  const STATE_KEY = "bhv.adState.v2";
   const LAST_EP_KEY = "bhv.adLastEpisodeKey";
 
   /**
@@ -137,19 +152,52 @@
     });
   }
 
-  /* ---------- Episode counter helpers ---------- */
+  /* ---------- Pre-roll state helpers ---------- */
 
-  function readCounter() {
+  /**
+   * Persisted state shape (localStorage, JSON-encoded):
+   *   {
+   *     firstAdFired:        bool,      // has the first ad ever fired?
+   *     firstSeriesId:       string,    // series the user is building
+   *                                     // the phase-1 count against
+   *     firstSeriesEpisodes: number,    // # of DISTINCT episodes watched
+   *                                     // in that series
+   *     lastSeriesId:        string,    // last series we've seen an
+   *                                     // episode of (phase 2 series-
+   *                                     // change detection)
+   *     seriesSinceLastAd:   number,    // # of NEW series opened since
+   *                                     // the last ad (phase 2)
+   *   }
+   */
+  function readState() {
     try {
-      const n = parseInt(localStorage.getItem(COUNTER_KEY) || "0", 10);
-      return isFinite(n) && n >= 0 ? n : 0;
+      const raw = localStorage.getItem(STATE_KEY);
+      if (!raw) return newState();
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== "object") return newState();
+      return {
+        firstAdFired: !!parsed.firstAdFired,
+        firstSeriesId: String(parsed.firstSeriesId || ""),
+        firstSeriesEpisodes: Math.max(0, Number(parsed.firstSeriesEpisodes) || 0),
+        lastSeriesId: String(parsed.lastSeriesId || ""),
+        seriesSinceLastAd: Math.max(0, Number(parsed.seriesSinceLastAd) || 0),
+      };
     } catch (_) {
-      return 0;
+      return newState();
     }
   }
-  function writeCounter(n) {
+  function newState() {
+    return {
+      firstAdFired: false,
+      firstSeriesId: "",
+      firstSeriesEpisodes: 0,
+      lastSeriesId: "",
+      seriesSinceLastAd: 0,
+    };
+  }
+  function writeState(st) {
     try {
-      localStorage.setItem(COUNTER_KEY, String(n));
+      localStorage.setItem(STATE_KEY, JSON.stringify(st));
     } catch (_) {
       /* storage disabled — ignore */
     }
@@ -168,51 +216,95 @@
   }
 
   /**
-   * Called by player.js every time a new episode is opened. Increments
-   * the global counter but only when the (series, ep) pair changes so
-   * refreshing the same episode doesn't inflate the count.
+   * Called by player.js every time a new episode is opened. Decides
+   * whether a pre-roll ad should play BEFORE this episode and
+   * atomically updates the persisted state.
    *
-   * Trigger rule (warmup=5, every=3 by default):
-   *   • episodes 1..5           → NO ad (grace period)
-   *   • episode 6               → AD (first episode after warmup)
-   *   • episodes 7, 8           → no ad
-   *   • episode 9               → AD
-   *   • episodes 10, 11         → no ad
-   *   • episode 12              → AD, and so on every 3 episodes.
+   * Rule (defaults: firstAfterEpisodes=5, everySeries=3):
+   *
+   *   PHASE 1 — No ad has ever fired yet.
+   *     • We tally DISTINCT episodes watched inside the FIRST series
+   *       the user opens.
+   *     • Episode #1..#5 of that series → no ad.
+   *     • Episode #6 (i.e. right after they've "finished 5 episodes")
+   *       → trigger the first ad.
+   *     • If the user bounces to a different series before hitting
+   *       episode 6, we RESET the tally against the new series — in
+   *       other words, phase 1's rule is really "once some series
+   *       crosses 5 completed episodes, show the ad".
+   *
+   *   PHASE 2 — The first ad has fired.
+   *     • We count new series the user opens (one unit per switch).
+   *     • Every `everySeries` series opens → trigger an ad.
+   *     • Switching between episodes within the same series does
+   *       NOT advance the counter.
    *
    * Returns `true` if the pre-roll should play BEFORE this episode.
    */
   function notifyEpisodeOpen(seriesId, epNum) {
-    const key = seriesId + ":" + epNum;
     if (!seriesId || !epNum) return false;
-    if (readLastKey() === key) return false; // same episode reload
+    const key = seriesId + ":" + epNum;
+    // Same episode reload — don't advance any counter, don't re-fire.
+    if (readLastKey() === key) return false;
     writeLastKey(key);
-    const nextCount = readCounter() + 1;
-    writeCounter(nextCount);
 
     const cfg = AD_CONFIG.preRoll;
-    if (!cfg.enabled) return false;
+    if (!cfg || !cfg.enabled) return false;
 
-    const warmup = Math.max(0, Number(cfg.warmupEpisodes) || 0);
-    const every = Math.max(1, Number(cfg.everyEpisodes) || 1);
+    const firstAfter = Math.max(0, Number(cfg.firstAfterEpisodes) || 0);
+    const everyN = Math.max(1, Number(cfg.everySeries) || 1);
 
-    // Still inside the ad-free grace period.
-    if (nextCount <= warmup) return false;
+    const st = readState();
+    let fireAd = false;
 
-    // Position within the post-warmup window: 1 means first episode
-    // after warmup (which should trigger), 2 is the next, etc.
-    const postIndex = nextCount - warmup;
-    return (postIndex - 1) % every === 0;
+    if (!st.firstAdFired) {
+      // -------- PHASE 1 ---------
+      if (st.firstSeriesId !== seriesId) {
+        // User switched to a new series before hitting the threshold —
+        // start tracking the new one from scratch.
+        st.firstSeriesId = seriesId;
+        st.firstSeriesEpisodes = 1;
+      } else {
+        st.firstSeriesEpisodes += 1;
+      }
+      // Episode (firstAfter + 1) is the one that triggers the ad:
+      //   • firstAfter=5 → episode 6 triggers.
+      // "Episode" here = "the Nth DISTINCT episode of this series
+      // we've seen", not necessarily ep.ep (user could skip around).
+      if (st.firstSeriesEpisodes > firstAfter) {
+        fireAd = true;
+        st.firstAdFired = true;
+        // Prime phase-2 counters so the next ad doesn't fire until N
+        // *new* series after this one.
+        st.lastSeriesId = seriesId;
+        st.seriesSinceLastAd = 0;
+      }
+    } else {
+      // -------- PHASE 2 ---------
+      if (st.lastSeriesId !== seriesId) {
+        // User crossed into a brand-new series.
+        st.lastSeriesId = seriesId;
+        st.seriesSinceLastAd += 1;
+        if (st.seriesSinceLastAd >= everyN) {
+          fireAd = true;
+          st.seriesSinceLastAd = 0;
+        }
+      }
+      // else: still inside the current series → no advance, no ad.
+    }
+
+    writeState(st);
+    return fireAd;
   }
 
-  /** Current counter (for debugging / UI badges). */
+  /** Current debug snapshot of the ad state. */
   function episodeCount() {
-    return readCounter();
+    return readState();
   }
 
-  /** Dev helper — manually reset the counter. */
+  /** Dev helper — manually reset all ad-rule bookkeeping. */
   function resetCounter() {
-    writeCounter(0);
+    writeState(newState());
     writeLastKey("");
   }
 
