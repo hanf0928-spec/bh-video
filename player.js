@@ -113,44 +113,12 @@
   /* ---------- API ---------- */
 
   function fetchLibrary() {
-    // Only fetch what the player page actually needs: the ONE series
-    // currently in the URL (?id=...). Falls back to the lightweight
-    // catalog if the id lookup fails for any reason (unknown id,
-    // backend down, etc.), so legacy deep links still work.
-    const id = getRequestedId();
-    if (id) {
-      return fetch(
-        "/api/library/" + encodeURIComponent(id),
-        { headers: { Accept: "application/json" } }
-      )
-        .then((r) => (r.ok ? r.json() : null))
-        .then((data) => {
-          if (data && data.series) {
-            Catalog.mergeImported([data.series]);
-            return true;
-          }
-          return false;
-        })
-        .catch(() => false)
-        .then((hit) => {
-          if (hit) return;
-          // Fallback: hydrate at least the lightweight catalog so the
-          // page can still render SOMETHING (e.g. a "series not found"
-          // state driven by the real data).
-          return fetch("/api/library/catalog", {
-            headers: { Accept: "application/json" },
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .then((data) => {
-              if (data && Array.isArray(data.imported)) {
-                Catalog.mergeImported(data.imported);
-              }
-            })
-            .catch(() => {});
-        });
-    }
-    // No id in URL — fetch the lightweight catalog as a fallback.
-    return fetch("/api/library/catalog", {
+    // Always hydrate the FULL catalog first so the search box / browse
+    // list on the player page can reach EVERY published series — not
+    // just the one currently playing. The lightweight catalog carries
+    // every series (title, cover, tags, …) without the heavy per-episode
+    // signed URLs, which is exactly what search needs.
+    const catalogP = fetch("/api/library/catalog", {
       headers: { Accept: "application/json" },
     })
       .then((r) => (r.ok ? r.json() : null))
@@ -160,6 +128,28 @@
         }
       })
       .catch(() => {});
+
+    // Then, if a specific series is requested (?id=...), fetch its full
+    // record (with per-episode signed `src`) and merge it on top. Because
+    // mergeImported() keys by id, the full record overwrites the lighter
+    // catalog entry for the same id, keeping the complete episode list.
+    const id = getRequestedId();
+    const detailP = id
+      ? fetch("/api/library/" + encodeURIComponent(id), {
+          headers: { Accept: "application/json" },
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (data && data.series) {
+              Catalog.mergeImported([data.series]);
+              return true;
+            }
+            return false;
+          })
+          .catch(() => false)
+      : Promise.resolve(false);
+
+    return Promise.all([catalogP, detailP]).then(() => true);
   }
 
   function fetchPlayStats() {
