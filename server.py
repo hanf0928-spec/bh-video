@@ -1059,37 +1059,68 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
     # on every deploy without filename-level versioning. The rest
     # (images, mp4, fonts) are allowed to use the default heuristic
     # cache since they're content-addressed by URL.
-    _NO_CACHE_SUFFIXES = (".html", ".htm", ".js", ".css", ".json", ".map")
+    _NO_CACHE_SUFFIXES = (".html", ".htm", ".json", ".map")
+
+    # Suffixes we're willing to gzip-encode on the fly. All of these are
+    # text-based and compress 60-80 %. Keep binary assets (jpg/mp4/woff)
+    # OUT of this list — they'd just waste CPU with ~0 payload saving.
+    _GZIP_SUFFIXES = (".js", ".css", ".svg", ".map", ".txt", ".xml")
+
+    # Minimum response size before we bother with gzip. Below this the
+    # compression framing overhead can actually make the body bigger.
+    _GZIP_MIN_BYTES = 1024
+
+    # Enable HTTP/1.1 keep-alive so the browser can reuse the same TCP
+    # connection for every static asset (html + 4 js + css + imgs). On
+    # a cold tab this saves 6-10 TLS handshakes.
+    protocol_version = "HTTP/1.1"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=ROOT_DIR, **kwargs)
+
+    def _path_lower(self):
+        try:
+            return (self.path or "").split("?", 1)[0].split("#", 1)[0].lower()
+        except Exception:
+            return ""
 
     def end_headers(self):
         """
         Inject Cache-Control before every response is finalised.
 
-        For HTML/JS/CSS/JSON we send ``no-cache`` (not ``no-store``):
-        browsers may keep a local copy, but must revalidate with the
-        server via ``If-Modified-Since`` on every reload — so a code
-        push is picked up on the user's next refresh instead of being
-        shadowed by a stale cache for minutes/hours.
-        API handlers set their own ``Cache-Control: no-store`` via
-        :meth:`_send_json` before calling :meth:`end_headers`; the
-        duplicate header is harmless but we skip the override when a
-        value has already been sent to keep responses tidy.
+        Policy:
+        - Static assets requested with a cache-busting query string
+          (``?v=20261035``) are treated as immutable: we send a one-year
+          max-age so a repeat visit reuses the local copy entirely with
+          no revalidation round-trip. Any new deploy bumps the ``?v=``
+          number and the browser treats it as a brand-new URL.
+        - HTML / JSON / source maps keep ``no-cache, must-revalidate``
+          so a code push is picked up on the next refresh.
+        - API handlers set their own ``Cache-Control: no-store`` via
+          :meth:`_send_json` before calling :meth:`end_headers`; the
+          duplicate header is harmless but we skip the override when a
+          value has already been sent to keep responses tidy.
         """
         try:
-            path = (self.path or "").split("?", 1)[0].split("#", 1)[0].lower()
-            if path.endswith(self._NO_CACHE_SUFFIXES) or path == "/" or path.endswith("/"):
-                # SimpleHTTPRequestHandler keeps a list of pending
-                # headers in ``self._headers_buffer``; peek at it so we
-                # don't double-stamp a route that already set one.
-                buf = getattr(self, "_headers_buffer", []) or []
-                if not any(
-                    isinstance(h, (bytes, bytearray))
-                    and h.lower().startswith(b"cache-control:")
-                    for h in buf
-                ):
+            path = self._path_lower()
+            has_version = ("?v=" in (self.path or ""))
+
+            buf = getattr(self, "_headers_buffer", []) or []
+            already_cached = any(
+                isinstance(h, (bytes, bytearray))
+                and h.lower().startswith(b"cache-control:")
+                for h in buf
+            )
+            if not already_cached:
+                # Any URL that carries a cache-busting ``?v=`` suffix
+                # (we emit one on every static reference in index.html /
+                # player.html / admin.html) is safe to cache forever —
+                # a code change bumps v= and dodges the stale copy.
+                if has_version and not path.endswith(self._NO_CACHE_SUFFIXES):
+                    self.send_header(
+                        "Cache-Control", "public, max-age=31536000, immutable"
+                    )
+                elif path.endswith(self._NO_CACHE_SUFFIXES) or path == "/" or path.endswith("/"):
                     self.send_header("Cache-Control", "no-cache, must-revalidate")
                     self.send_header("Pragma", "no-cache")
                     self.send_header("Expires", "0")
@@ -1097,6 +1128,64 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             # Never let a header-injection bug sink a response.
             pass
         super().end_headers()
+
+    # ---- Static-file gzip -------------------------------------------------
+    def _try_serve_gzipped_static(self):
+        """
+        If the request is for a gzip-eligible static text file and the
+        client advertises gzip support, read the file, gzip it, and
+        write the whole response here. Returns True when handled, False
+        when the default static handler should run.
+
+        This replaces the default ``shutil.copyfileobj`` streaming for
+        text assets, which on the stock Python ``http.server`` has been
+        observed to stall for tens of seconds on slow uplinks because
+        the 16-KiB blocking writes don't play well with small TCP
+        windows. For 25 KiB of JS we'd rather pay ~5 ms of CPU to gzip
+        it to 8 KiB and ship it in ONE write().
+        """
+        try:
+            path = self._path_lower()
+            if not path.endswith(self._GZIP_SUFFIXES):
+                return False
+            accept = (self.headers.get("Accept-Encoding") or "").lower()
+            if "gzip" not in accept:
+                return False
+            fs_path = self.translate_path(self.path)
+            if not os.path.isfile(fs_path):
+                return False
+            size = os.path.getsize(fs_path)
+            if size < self._GZIP_MIN_BYTES:
+                return False
+
+            with open(fs_path, "rb") as f:
+                raw = f.read()
+            body = gzip.compress(raw, compresslevel=6)
+
+            ctype = self.guess_type(fs_path)
+            try:
+                mtime = datetime.datetime.utcfromtimestamp(
+                    os.path.getmtime(fs_path)
+                ).strftime("%a, %d %b %Y %H:%M:%S GMT")
+            except Exception:
+                mtime = None
+
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Vary", "Accept-Encoding")
+            if mtime:
+                self.send_header("Last-Modified", mtime)
+            # Cache-Control is injected by our overridden end_headers().
+            self.end_headers()
+            self.wfile.write(body)
+            return True
+        except Exception as exc:
+            sys.stderr.write(
+                "[bh-video] gzip static failed for %s: %s\n" % (self.path, exc)
+            )
+            return False
 
     # ---- API helpers ------------------------------------------------------
     def _send_json(self, status, payload):
@@ -1270,6 +1359,12 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
                 _record_visit(self._client_ip())
             except Exception:
                 pass
+
+        # Fast-path for gzip-eligible text assets (JS/CSS/SVG). We ship
+        # the compressed body in ONE write() — much faster on slow
+        # uplinks than the default 16-KiB stream copy, and ~3x smaller.
+        if self._try_serve_gzipped_static():
+            return
 
         return super().do_GET()
 
