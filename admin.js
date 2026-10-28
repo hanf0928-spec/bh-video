@@ -180,6 +180,12 @@
     showLogin();
   });
 
+  if (refreshBtn) {
+    refreshBtn.addEventListener("click", function () {
+      loadOverview();
+    });
+  }
+
   /* ---------- Tab switching ---------- */
   function activateTab(name) {
     tabs.forEach(function (t) {
@@ -928,8 +934,10 @@
       showLogin();
       return;
     }
-    refreshBtn.disabled = true;
-    refreshBtn.textContent = "加载中…";
+    if (refreshBtn) {
+      refreshBtn.disabled = true;
+      refreshBtn.textContent = "加载中…";
+    }
 
     fetch("/api/admin/overview?token=" + encodeURIComponent(token), {
       headers: { Authorization: "Bearer " + token },
@@ -951,8 +959,10 @@
         console.error("[admin] load failed", err);
       })
       .then(function () {
-        refreshBtn.disabled = false;
-        refreshBtn.textContent = "刷新";
+        if (refreshBtn) {
+          refreshBtn.disabled = false;
+          refreshBtn.textContent = "刷新";
+        }
       });
   }
 
