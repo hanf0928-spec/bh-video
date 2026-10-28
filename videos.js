@@ -70,8 +70,19 @@
    * typos by re-uploading the same Excel.
    */
   function mergeImported(imported) {
+    // ACCUMULATING merge: keep whatever is already in window.VIDEOS and
+    // overlay the incoming batch on top (keyed by id). This matters
+    // because the home feed first loads the full catalog (all series)
+    // and then lazily hydrates ONE series at a time via
+    // /api/library/<id> (player.js on the player page, and app.js's
+    // hydrateSeriesSrc when a feed card becomes active). If we rebuilt
+    // the Map from scratch each call, that single-series hydration would
+    // DROP every other series — and then search (which reads
+    // window.VIDEOS) could only ever find the one currently playing.
     const byId = new Map();
-    BUILTIN_SERIES.forEach((s) => byId.set(s.id, s));
+    (window.VIDEOS || []).forEach((s) => {
+      if (s && s.id) byId.set(s.id, s);
+    });
     (imported || []).forEach((s) => {
       if (s && s.id) byId.set(s.id, s);
     });
