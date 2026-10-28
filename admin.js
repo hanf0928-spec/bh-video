@@ -785,7 +785,10 @@
   /* ---------- Library list ---------- */
   function loadLibrary() {
     if (tabLibrary.hidden) return;
-    fetch("/api/library")
+    // The admin library table only needs id / title / category / episode
+    // count, so hit the lightweight catalog endpoint — this skips the
+    // potentially-megabytes-sized signed URLs that /api/library ships.
+    fetch("/api/library/catalog")
       .then(function (r) {
         return r.ok ? r.json() : null;
       })
@@ -1136,8 +1139,10 @@
   /* ---------- Boot ---------- */
   document.addEventListener("DOMContentLoaded", function () {
     // Also load the imported library so the videos table can show
-    // human-readable titles for user-imported series.
-    fetch("/api/library")
+    // human-readable titles for user-imported series. We use the
+    // lightweight catalog variant: the admin page only needs series
+    // metadata (titles, episode counts), not full signed URLs.
+    fetch("/api/library/catalog")
       .then(function (r) {
         return r.ok ? r.json() : null;
       })

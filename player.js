@@ -109,7 +109,46 @@
   /* ---------- API ---------- */
 
   function fetchLibrary() {
-    return fetch("/api/library", { headers: { Accept: "application/json" } })
+    // Only fetch what the player page actually needs: the ONE series
+    // currently in the URL (?id=...). Falls back to the lightweight
+    // catalog if the id lookup fails for any reason (unknown id,
+    // backend down, etc.), so legacy deep links still work.
+    const id = getRequestedId();
+    if (id) {
+      return fetch(
+        "/api/library/" + encodeURIComponent(id),
+        { headers: { Accept: "application/json" } }
+      )
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (data && data.series) {
+            Catalog.mergeImported([data.series]);
+            return true;
+          }
+          return false;
+        })
+        .catch(() => false)
+        .then((hit) => {
+          if (hit) return;
+          // Fallback: hydrate at least the lightweight catalog so the
+          // page can still render SOMETHING (e.g. a "series not found"
+          // state driven by the real data).
+          return fetch("/api/library/catalog", {
+            headers: { Accept: "application/json" },
+          })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+              if (data && Array.isArray(data.imported)) {
+                Catalog.mergeImported(data.imported);
+              }
+            })
+            .catch(() => {});
+        });
+    }
+    // No id in URL — fetch the lightweight catalog as a fallback.
+    return fetch("/api/library/catalog", {
+      headers: { Accept: "application/json" },
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && Array.isArray(data.imported)) {

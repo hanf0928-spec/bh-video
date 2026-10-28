@@ -18,7 +18,9 @@ Endpoints
 ---------
 GET  /api/stats
 POST /api/stats                — bump an episode counter.
-GET  /api/library
+GET  /api/library              — full library (heavy: includes signed URLs).
+GET  /api/library/catalog      — lightweight catalog (no `src` URLs). H5 feed uses this.
+GET  /api/library/<id>         — full details of ONE series (with signed URLs).
 POST /api/import               — add imported series (JSON body).
 POST /api/import/file          — add imported series (JSON file upload).
 POST /api/cos/preview          — scan a Tencent COS prefix, preview episodes.
@@ -41,6 +43,7 @@ Run
 """
 
 import datetime
+import gzip
 import hashlib
 import json
 import os
@@ -128,20 +131,122 @@ def _ensure_entry(stats, video_id):
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-:.]{0,127}$")
 
 
+# ---------------------------------------------------------------------------
+# Library file cache
+# ---------------------------------------------------------------------------
+# videos.local.json can grow to hundreds of KB once 50+ series with ~20
+# episodes each (each episode carrying a long signed URL) are imported.
+# Re-parsing it on every GET /api/library would saturate disk I/O and
+# tank response time. We memoise by (mtime, size) so the cache
+# auto-invalidates as soon as the file changes on disk — even across
+# unrelated writers.
+
+_lib_cache = {
+    "key": None,         # (mtime_ns, size)
+    "list": None,        # cached Series list
+    "catalog": None,     # cached lightweight catalog (built lazily)
+}
+
+
+def _library_cache_key():
+    try:
+        st = os.stat(LIBRARY_FILE)
+    except OSError:
+        return None
+    return (st.st_mtime_ns, st.st_size)
+
+
+def _invalidate_library_cache():
+    """Call after any mutating write to videos.local.json."""
+    _lib_cache["key"] = None
+    _lib_cache["list"] = None
+    _lib_cache["catalog"] = None
+
+
 def _load_library():
-    """Load videos.local.json. Returns a list of Series dicts (possibly empty)."""
+    """Load videos.local.json. Returns a list of Series dicts (possibly empty).
+
+    Memoised: a fresh parse happens only when the file's mtime or size
+    changes compared to the previous call, so concurrent GETs reuse the
+    same in-memory list for free.
+    """
     if not os.path.isfile(LIBRARY_FILE):
+        _lib_cache["key"] = None
+        _lib_cache["list"] = []
+        _lib_cache["catalog"] = None
         return []
+    key = _library_cache_key()
+    cached = _lib_cache["list"]
+    if cached is not None and key == _lib_cache["key"]:
+        return cached
     try:
         with open(LIBRARY_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, list):
-            return data
-        if isinstance(data, dict) and isinstance(data.get("imported"), list):
-            return data["imported"]
-        return []
+            parsed = data
+        elif isinstance(data, dict) and isinstance(data.get("imported"), list):
+            parsed = data["imported"]
+        else:
+            parsed = []
     except (OSError, ValueError):
-        return []
+        parsed = []
+    _lib_cache["key"] = key
+    _lib_cache["list"] = parsed
+    _lib_cache["catalog"] = None       # rebuilt on demand next time
+    return parsed
+
+
+def _load_library_catalog():
+    """
+    Return a *lightweight* projection of the imported library — one dict
+    per series WITHOUT the heavy `episodes[*].src` URLs. Front-end code
+    uses this for the home feed / search list: everything a card needs
+    (title, cover, episode count, …) without shipping megabytes of
+    signed URLs on every page load.
+
+    Lazy-built and cached alongside _load_library's cache so it costs
+    nothing after the first call.
+    """
+    cached_catalog = _lib_cache.get("catalog")
+    if cached_catalog is not None and _lib_cache["key"] == _library_cache_key():
+        return cached_catalog
+    full = _load_library()
+    light = []
+    for s in full:
+        if not isinstance(s, dict):
+            continue
+        episodes = s.get("episodes") or []
+        # Keep per-episode METADATA (number, title, duration, thumbnail,
+        # views) but strip the long `src` URL. Episode src is fetched
+        # lazily via /api/library/<id> when the player page opens.
+        light_eps = [
+            {
+                "ep": e.get("ep"),
+                "title": e.get("title", ""),
+                "thumbnail": e.get("thumbnail", ""),
+                "duration": e.get("duration", ""),
+                "views": e.get("views", ""),
+            }
+            for e in episodes
+            if isinstance(e, dict)
+        ]
+        light.append(
+            {
+                "id": s.get("id"),
+                "title": s.get("title", ""),
+                "description": s.get("description", ""),
+                "category": s.get("category", ""),
+                "author": s.get("author", ""),
+                "tags": s.get("tags", []),
+                "thumbnail": s.get("thumbnail", ""),
+                "i18n": s.get("i18n") or {},
+                "imported_at": s.get("imported_at", 0),
+                "episode_count": len(light_eps),
+                "episodes": light_eps,     # no `src` field — intentional
+            }
+        )
+    _lib_cache["catalog"] = light
+    return light
 
 
 def _save_library(series_list):
@@ -155,6 +260,7 @@ def _save_library(series_list):
             sort_keys=True,
         )
     os.replace(tmp_path, LIBRARY_FILE)
+    _invalidate_library_cache()
 
 
 def _clean_str(value, max_len=MAX_STR_LEN):
@@ -922,10 +1028,28 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
     # ---- API helpers ------------------------------------------------------
     def _send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+        # Negotiate gzip. The home-feed catalog payload grows linearly
+        # with imported series and is JSON (very compressible — often 70-80%
+        # smaller gzipped), so this single change can shave hundreds of KB
+        # off a 50-series catalog response.
+        encoding = ""
+        if len(body) >= 1024:
+            accept = (self.headers.get("Accept-Encoding") or "").lower()
+            if "gzip" in accept:
+                try:
+                    body = gzip.compress(body, compresslevel=6)
+                    encoding = "gzip"
+                except Exception:
+                    encoding = ""
+
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        if encoding:
+            self.send_header("Content-Encoding", encoding)
+            self.send_header("Vary", "Accept-Encoding")
         self.end_headers()
         self.wfile.write(body)
 
@@ -1012,6 +1136,37 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             with _library_lock:
                 imported = _load_library()
             self._send_json(HTTPStatus.OK, {"imported": imported})
+            return
+        if path == "/api/library/catalog":
+            # Lightweight projection: drops the per-episode `src` URLs so
+            # the H5 feed only pays ~1-2 KB per series instead of 10-20
+            # KB. Signed URLs are fetched on-demand via
+            # /api/library/<id> when the player page actually needs them.
+            with _library_lock:
+                catalog = _load_library_catalog()
+            self._send_json(HTTPStatus.OK, {"imported": catalog})
+            return
+        if path.startswith("/api/library/"):
+            # Single-series detail endpoint. Returns the full Series
+            # object (with signed URLs intact) for one id. Used by
+            # player.html so loading a single drama no longer forces the
+            # client to download the entire library.
+            series_id = path[len("/api/library/"):]
+            try:
+                from urllib.parse import unquote
+                series_id = unquote(series_id)
+            except Exception:
+                pass
+            if not series_id or series_id == "catalog":
+                self._send_error_json(HTTPStatus.BAD_REQUEST, "missing id")
+                return
+            with _library_lock:
+                full = _load_library()
+            match = next((s for s in full if s.get("id") == series_id), None)
+            if not match:
+                self._send_error_json(HTTPStatus.NOT_FOUND, "series not found")
+                return
+            self._send_json(HTTPStatus.OK, {"series": match})
             return
         if path == "/api/admin/overview":
             return self._handle_admin_overview()

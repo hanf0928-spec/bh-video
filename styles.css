@@ -1610,6 +1610,41 @@ body.feed-page {
   cursor: pointer;
 }
 
+/* Poster-only variant used by the home feed. The home page no longer
+   embeds a <video> per card — we render a tiny JPG preview and jump to
+   player.html on tap, so 50-series feeds stay snappy. */
+.feed-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;             /* fill the card for a punchy poster look */
+  background: #000;
+  cursor: pointer;
+  display: block;
+}
+
+/* Container reserved for a lazily-mounted <video>. Currently unused on
+   the home feed (we kept the hook in case we want to re-enable in-feed
+   previews for specific scenarios like Wi-Fi-only autoplay). */
+.feed-video-host {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+.feed-video-host:empty { display: none; }
+
+/* On the home feed the center play icon is a persistent "tap to open
+   player" affordance rather than a pause/play toggle, so always show
+   it (the home card never enters an "is-active, playing" state). */
+body.feed-page .feed-playpause {
+  opacity: 1;
+  pointer-events: auto;
+}
+body.feed-page .feed-item .feed-playpause {
+  background: rgba(0, 0, 0, 0.25);
+}
+
 .feed-gradient {
   position: absolute;
   inset: 0;

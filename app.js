@@ -59,7 +59,15 @@
   /* ---------- API ---------- */
 
   function fetchLibrary() {
-    return fetch("/api/library", { headers: { Accept: "application/json" } })
+    // Use the lightweight catalog endpoint on the home feed. It drops
+    // the per-episode signed URLs (which balloon the payload to several
+    // MB once 50+ series are imported) and keeps everything a card
+    // actually needs: title, cover, episode count, tags, description…
+    // Signed URLs for a specific drama are fetched later, on-demand,
+    // when the user opens the player page.
+    return fetch("/api/library/catalog", {
+      headers: { Accept: "application/json" },
+    })
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (data && Array.isArray(data.imported)) {
@@ -140,9 +148,17 @@
   /* ---------- Feed rendering ---------- */
 
   /**
-   * Build a single feed item: a 100vw × 100vh card containing a
-   * <video> element plus overlays (title, episode indicator,
-   * right-side actions, bottom CTA).
+   * Build a single feed item: a 100vw × 100vh card.
+   *
+   * KEY PERFORMANCE NOTE: the card is intentionally LIGHT at build
+   * time — just a poster <img>, static overlays, and a hidden
+   * <video> placeholder. The actual <video> element is **lazily
+   * mounted** when the card scrolls into view (see activateItem()),
+   * and torn down when it scrolls out, so a 50-series feed only
+   * ever has ONE live <video> in the DOM.
+   *
+   * The home feed is a preview surface — all playback goes through
+   * player.html — so a plain <img> is more than enough.
    */
   function buildFeedItem(series, index) {
     const title = i18n.pickLocalized(series, "title");
@@ -159,23 +175,29 @@
     item.dataset.index = String(index);
 
     item.innerHTML = `
-      <video class="feed-video"
-             playsinline webkit-playsinline
-             preload="none"
-             poster="${escapeAttr(poster)}"
-             data-series-id="${escapeAttr(series.id)}"></video>
+      <!-- Poster image: a tiny ~5 KB JPG per card. Only the first few
+           cards use native loading=eager so the first-screen renders
+           instantly; the rest defer until the browser needs them. -->
+      <img class="feed-poster"
+           src="${escapeAttr(poster)}"
+           alt="${escapeAttr(title)}"
+           loading="${index < 2 ? "eager" : "lazy"}"
+           decoding="async" />
+
+      <!-- Lazily-hydrated <video> container — populated by activateItem(). -->
+      <div class="feed-video-host" data-video-host></div>
 
       <!-- Dark gradient so overlays stay readable on any poster -->
       <div class="feed-gradient"></div>
 
-      <!-- Play / pause big center icon (only shown while paused) -->
-      <button class="feed-playpause" type="button" aria-label="播放/暂停">
+      <!-- Big center play icon (also acts as "open player" trigger). -->
+      <button class="feed-playpause" type="button" aria-label="播放">
         <svg class="icon-play" viewBox="0 0 24 24" width="56" height="56" fill="#fff">
           <path d="M8 5v14l11-7z"></path>
         </svg>
       </button>
 
-      <!-- Right-side action rail (like / share) -->
+      <!-- Right-side action rail (like / share / episode picker) -->
       <div class="feed-side">
         <button class="feed-side-btn feed-like" type="button" aria-label="点赞">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
@@ -293,122 +315,32 @@
   }
 
   /**
-   * Load a specific episode into the <video> element of a feed item.
-   * Updates the "第X集" chip, resets progress bar, triggers pre-roll
-   * ad gate, and auto-plays.
-   */
-  function loadEpisodeInto(item, series, epNum, opts) {
-    opts = opts || {};
-    const video = item.querySelector(".feed-video");
-    if (!video || !series) return;
-    const episode = episodeByNum(series, epNum);
-    if (!episode) return;
-
-    const chip = item.querySelector("[data-ep-chip]");
-    if (chip) chip.textContent = t("series.epShort", { n: episode.ep });
-
-    const progress = item.querySelector("[data-progress]");
-    if (progress) progress.style.width = "0%";
-
-    video.src = episode.src;
-    video.poster = episode.thumbnail || series.thumbnail || "";
-    video.dataset.epNum = String(episode.ep);
-    video.load();
-
-    const state = getItemState(series.id);
-    state.currentEp = episode.ep;
-
-    reportStat(series.id, episode.ep, "open");
-
-    // Pre-roll ad gate (same rule as player page).
-    const Ads = window.BHAds;
-    const shouldPreRoll =
-      opts.skipPreRoll
-        ? false
-        : Ads && typeof Ads.notifyEpisodeOpen === "function"
-        ? Ads.notifyEpisodeOpen(series.id, episode.ep)
-        : false;
-
-    const startPlay = () => {
-      // Only play if this item is still the active one.
-      if (!item.classList.contains("is-active")) return;
-      const p = video.play();
-      if (p && typeof p.catch === "function") {
-        p.catch(() => {
-          /* autoplay blocked — user can tap center icon */
-          item.classList.add("is-paused");
-        });
-      }
-    };
-
-    if (shouldPreRoll && Ads && typeof Ads.playPreRoll === "function") {
-      try { video.pause(); } catch (_) {}
-      Ads.playPreRoll().finally(() => {
-        if (
-          video.dataset.epNum === String(episode.ep) &&
-          video.dataset.seriesId === series.id
-        ) {
-          startPlay();
-        }
-      });
-    } else {
-      startPlay();
-    }
-  }
-
-  /**
-   * Jump from the home feed to the full player page.
-   * Carries three pieces of state in the URL so playback can continue
-   * seamlessly:
-   *   id = series id
-   *   ep = episode number
-   *   t  = current playback time (seconds) within that episode
-   * When `t >= duration - 0.5` (meaning the preview already finished),
-   * we instead redirect to the NEXT episode starting at t=0, so the
-   * player page naturally resumes with the following episode of the
-   * same series.
+   * Jump from the home feed to the full player page for ONE series.
+   * The home catalog response (via /api/library/catalog) does not
+   * carry per-episode `src` URLs — those are generated on demand on
+   * the player page — so we always hand off at ep=1, t=0 and let the
+   * player page fetch /api/library/<id> for the real playback data.
    */
   function openPlayerForItem(item) {
     const seriesId = item.dataset.seriesId;
-    const series = Catalog.findSeries(seriesId);
-    if (!series) return;
-    const video = item.querySelector(".feed-video");
-    if (!video) return;
-
-    const curEp = Number(video.dataset.epNum) || 1;
-    const currentTime = Number(video.currentTime) || 0;
-    const duration = Number(video.duration) || 0;
-
-    let targetEp = curEp;
-    let targetTime = currentTime;
-
-    // If the current preview episode has already finished, roll over
-    // to the next episode (if any) so the player page picks up where
-    // the feed left off.
-    const finished = duration > 0 && currentTime >= duration - 0.5;
-    if (finished) {
-      const idx = (series.episodes || []).findIndex(
-        (e) => Number(e.ep) === curEp
-      );
-      const next = idx >= 0 ? series.episodes[idx + 1] : null;
-      if (next) {
-        targetEp = next.ep;
-        targetTime = 0;
-      } else {
-        // Last episode of the series — restart from the beginning of
-        // the current episode on the player page.
-        targetTime = 0;
-      }
-    }
-
-    // Pause the preview before navigating so the audio doesn't double
-    // up if the browser caches the home page.
-    try { video.pause(); } catch (_) {}
-
+    if (!seriesId) return;
     const url =
-      "player.html?id=" + encodeURIComponent(series.id) +
-      "&ep=" + encodeURIComponent(targetEp) +
-      "&t=" + encodeURIComponent(Math.max(0, Math.floor(targetTime)));
+      "player.html?id=" + encodeURIComponent(seriesId) + "&ep=1";
+    window.location.href = url;
+  }
+
+  /**
+   * Jump from the home feed to the full player page for ONE series.
+   * The home catalog response (via /api/library/catalog) does not
+   * carry per-episode `src` URLs — those are generated on demand on
+   * the player page — so we always hand off at ep=1, t=0 and let the
+   * player page fetch /api/library/<id> for the real playback data.
+   */
+  function openPlayerForItem(item) {
+    const seriesId = item.dataset.seriesId;
+    if (!seriesId) return;
+    const url =
+      "player.html?id=" + encodeURIComponent(seriesId) + "&ep=1";
     window.location.href = url;
   }
 
@@ -417,71 +349,42 @@
     const seriesId = item.dataset.seriesId;
     const series = Catalog.findSeries(seriesId);
     if (!series) return;
-    const video = item.querySelector(".feed-video");
+
     const playBtn = item.querySelector(".feed-playpause");
     const likeBtn = item.querySelector(".feed-like");
     const shareBtn = item.querySelector(".feed-share");
     const epPicker = item.querySelector(".feed-ep-picker");
-    const progress = item.querySelector("[data-progress]");
+    const poster = item.querySelector(".feed-poster");
 
-    // Tap on the video area → jump to the full player page.
-    // The home feed is a preview only; actual playback (with a
-    // scrubbable progress bar, like/share, episode auto-advance,
-    // etc.) happens on player.html.
-    video.addEventListener("click", () => openPlayerForItem(item));
+    // Tap on the poster area or the big center play icon → open the
+    // dedicated player page. (Previously this card also auto-played
+    // a <video> preview, but on a 50-series feed that burned tons of
+    // bandwidth + CPU for very little user value.)
+    const openPlayer = () => openPlayerForItem(item);
+    if (poster) poster.addEventListener("click", openPlayer);
     playBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      openPlayerForItem(item);
+      openPlayer();
     });
 
-    // When the preview episode ends → jump to the player page so the
-    // viewer continues watching. If it was the FIRST episode of a
-    // series the player page will naturally take over at episode 2
-    // (handled by openPlayerForItem's roll-over logic).
-    video.addEventListener("ended", () => {
-      reportStat(series.id, Number(video.dataset.epNum) || 1, "ended");
-      openPlayerForItem(item);
-    });
-
-    // Report "play" at most once per episode.
-    let lastPlayReportedEp = null;
-    video.addEventListener("play", () => {
-      item.classList.remove("is-paused");
-      const ep = Number(video.dataset.epNum) || 1;
-      const key = series.id + ":" + ep;
-      if (lastPlayReportedEp !== key) {
-        lastPlayReportedEp = key;
-        reportStat(series.id, ep, "play");
-      }
-    });
-    video.addEventListener("pause", () => {
-      if (!video.ended) item.classList.add("is-paused");
-    });
-
-    // Progress bar sync.
-    video.addEventListener("timeupdate", () => {
-      if (!progress || !video.duration) return;
-      const pct = (video.currentTime / video.duration) * 100;
-      progress.style.width = pct + "%";
-    });
-
-    // Like / share / episode picker.
+    // Like toggle (purely local for now).
     likeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       likeBtn.classList.toggle("liked");
     });
+
     shareBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const url =
         location.origin +
-        "/player.html?id=" + encodeURIComponent(series.id) + "&ep=" +
-        (Number(video.dataset.epNum) || 1);
+        "/player.html?id=" + encodeURIComponent(series.id) + "&ep=1";
       if (navigator.share) {
         navigator.share({ title: series.title, url }).catch(() => {});
       } else if (navigator.clipboard) {
         navigator.clipboard.writeText(url).then(() => showToast(t("toast.linkCopied")));
       }
     });
+
     epPicker.addEventListener("click", (e) => {
       e.stopPropagation();
       openEpisodePicker(item, series);
@@ -521,30 +424,10 @@
       deactivateItem(other)
     );
     item.classList.add("is-active");
-    const seriesId = item.dataset.seriesId;
-    const series = Catalog.findSeries(seriesId);
-    if (!series) return;
-    const state = getItemState(seriesId);
-    const video = item.querySelector(".feed-video");
-    // First time activating → load the right episode.
-    if (!state.hasStarted) {
-      state.hasStarted = true;
-      loadEpisodeInto(item, series, state.currentEp || 1);
-    } else {
-      // Re-entering a card: just resume whatever was playing.
-      const p = video.play();
-      if (p && typeof p.catch === "function") {
-        p.catch(() => item.classList.add("is-paused"));
-      }
-    }
   }
 
   function deactivateItem(item) {
     item.classList.remove("is-active");
-    const video = item.querySelector(".feed-video");
-    if (video) {
-      try { video.pause(); } catch (_) {}
-    }
   }
 
   /* ---------- Episode picker sheet ---------- */
@@ -563,13 +446,9 @@
         <div class="feed-ep-sheet-grid">
           ${(series.episodes || [])
             .map((e) => {
-              const isActive =
-                Number(e.ep) === Number(
-                  item.querySelector(".feed-video").dataset.epNum || 1
-                );
-              return `<button class="feed-ep-cell ${
-                isActive ? "active" : ""
-              }" data-ep="${escapeAttr(String(e.ep))}">${escapeHtml(
+              return `<button class="feed-ep-cell" data-ep="${escapeAttr(
+                String(e.ep)
+              )}">${escapeHtml(
                 t("series.epShort", { n: e.ep })
               )}</button>`;
             })
@@ -589,7 +468,16 @@
       if (!cell) return;
       const ep = Number(cell.dataset.ep);
       closeEpisodePicker();
-      loadEpisodeInto(item, series, ep, { skipPreRoll: false });
+      // Jump straight to the player page at the picked episode.
+      // (The home feed is preview-only — real playback lives on
+      // player.html so the viewer gets a scrubbable progress bar
+      // and automatic episode advancement.)
+      const seriesId = item.dataset.seriesId;
+      window.location.href =
+        "player.html?id=" +
+        encodeURIComponent(seriesId) +
+        "&ep=" +
+        encodeURIComponent(ep);
     });
   }
   function closeEpisodePicker() {
@@ -739,15 +627,11 @@
     document.addEventListener("visibilitychange", () => {
       // Pause everything when the tab is hidden.
       if (document.visibilityState === "hidden") {
-        feedEl.querySelectorAll(".feed-video").forEach((v) => {
-          try { v.pause(); } catch (_) {}
-        });
+        // Home feed has no live <video> elements anymore (the preview
+        // was removed in favour of a lightweight poster-only feed) —
+        // nothing to pause when the tab goes to the background.
       } else {
-        const active = feedEl.querySelector(".feed-item.is-active .feed-video");
-        if (active) {
-          const p = active.play();
-          if (p && typeof p.catch === "function") p.catch(() => {});
-        }
+        // Nothing to resume: cards are poster-only.
       }
     });
 
