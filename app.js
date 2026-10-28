@@ -722,17 +722,15 @@
       ? list.slice(0, 20)
       : list.filter((v) => {
           const hay = [];
-          // Primary localized title / description.
+          // Primary localized title / description (Indonesian only).
           hay.push(i18n.pickLocalized(v, "title") || "");
           hay.push(i18n.pickLocalized(v, "description") || "");
-          // Every other language block (zh / en / …) so cross-language
-          // queries match once titles are localized.
-          const i18nObj = v.i18n || {};
-          Object.keys(i18nObj).forEach((lang) => {
-            const blk = i18nObj[lang] || {};
-            if (blk.title) hay.push(blk.title);
-            if (blk.description) hay.push(blk.description);
-          });
+          // Indonesian i18n block, in case it carries extra text.
+          const idBlock = (v.i18n || {}).id;
+          if (idBlock) {
+            if (idBlock.title) hay.push(idBlock.title);
+            if (idBlock.description) hay.push(idBlock.description);
+          }
           hay.push((Array.isArray(v.tags) ? v.tags : []).join(" "));
           hay.push(v.category || "");
           hay.push(v.author || "");
