@@ -283,7 +283,6 @@
     current = lang;
     persist(lang);
     applyI18n();
-    syncSwitcher();
     listeners.forEach((fn) => {
       try {
         fn(current);
@@ -303,33 +302,8 @@
     return () => listeners.delete(fn);
   }
 
-  /* ---------- Language switcher ---------- */
-  function renderSwitcher() {
-    const host = document.querySelector("[data-lang-switcher]");
-    if (!host) return;
-    host.innerHTML = `
-      <div class="lang-switcher" role="group" aria-label="${escapeAttr(t("lang.label"))}">
-        <button type="button" class="lang-btn" data-lang="id"
-                aria-label="${escapeAttr(t("lang.id.full"))}">ID</button>
-        <button type="button" class="lang-btn" data-lang="en"
-                aria-label="${escapeAttr(t("lang.en.full"))}">EN</button>
-      </div>
-    `;
-    host.addEventListener("click", (e) => {
-      const btn = e.target.closest("button[data-lang]");
-      if (!btn) return;
-      setLang(btn.getAttribute("data-lang"));
-    });
-    syncSwitcher();
-  }
-
-  function syncSwitcher() {
-    document.querySelectorAll(".lang-switcher .lang-btn").forEach((btn) => {
-      const isActive = btn.getAttribute("data-lang") === current;
-      btn.classList.toggle("active", isActive);
-      btn.setAttribute("aria-pressed", isActive ? "true" : "false");
-    });
-  }
+  /* ---------- Single-locale (Indonesian only) ----------
+     The language switcher was removed; UI strings are fixed to id. */
 
   function escapeAttr(s) {
     return String(s == null ? "" : s)
@@ -363,7 +337,7 @@
 
   /* ---------- Boot ---------- */
   function boot() {
-    renderSwitcher();
+    // Single-locale build: Indonesian only — no language switcher.
     applyI18n();
   }
   if (document.readyState === "loading") {

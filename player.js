@@ -348,7 +348,7 @@
 
       <!-- Big center play/pause overlay only shown while paused.
            Clicking it toggles playback — it does NOT navigate. -->
-      <button class="feed-playpause" type="button" aria-label="播放/暂停">
+      <button class="feed-playpause" type="button" aria-label="Putar/Jeda">
         <svg class="icon-play" viewBox="0 0 24 24" width="56" height="56" fill="#fff">
           <path d="M8 5v14l11-7z"></path>
         </svg>
@@ -358,7 +358,7 @@
       <div class="feed-side">
         <button class="feed-side-btn feed-like${
           likeInfo.liked ? " liked" : ""
-        }" type="button" aria-label="点赞">
+        }" type="button" aria-label="Suka">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -369,7 +369,7 @@
           )}</span>
         </button>
 
-        <button class="feed-side-btn feed-share" type="button" data-i18n-attr="aria-label:player.share">
+        <button class="feed-side-btn feed-share" type="button" aria-label="Bagikan">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -379,10 +379,10 @@
             <line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
             <line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
           </svg>
-          <span class="feed-side-label" data-i18n="player.share"></span>
+          <span class="feed-side-label">Bagikan</span>
         </button>
 
-        <button class="feed-side-btn feed-ep-picker" type="button" aria-label="选集">
+        <button class="feed-side-btn feed-ep-picker" type="button" aria-label="Daftar Episode">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
@@ -707,7 +707,7 @@
       <div class="feed-ep-sheet-inner">
         <div class="feed-ep-sheet-head">
           <h3>${escapeHtml(i18n.pickLocalized(series, "title"))}</h3>
-          <button class="feed-ep-sheet-close" type="button" aria-label="关闭">×</button>
+          <button class="feed-ep-sheet-close" type="button" aria-label="Tutup">×</button>
         </div>
         <div class="feed-ep-sheet-grid">
           ${(series.episodes || [])

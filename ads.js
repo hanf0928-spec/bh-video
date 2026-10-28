@@ -93,7 +93,7 @@
       firstAfterEpisodes: 5,
       // Phase 2: after the first ad, fire again every N new series.
       everySeries: 3,
-      label: "广告 · Ad",
+      label: "Iklan",
     },
   };
 
@@ -379,12 +379,12 @@
     // Close button: locked for `BANNER_SKIP_AFTER` seconds, then clickable.
     const closeBtn = createEl("button", "bhv-ad-close", {
       type: "button",
-      "aria-label": "关闭广告",
+      "aria-label": "Tutup Iklan",
     });
     attachCountdownClose(closeBtn, wrap, BANNER_SKIP_AFTER);
 
     const tag = createEl("span", "bhv-ad-tag");
-    tag.textContent = "广告 · Ad";
+    tag.textContent = "Iklan";
 
     wrap.appendChild(img);
     wrap.appendChild(tag);
@@ -417,12 +417,12 @@
     // Close button: locked for `BANNER_SKIP_AFTER` seconds, then clickable.
     const closeBtn = createEl("button", "bhv-ad-close", {
       type: "button",
-      "aria-label": "关闭广告",
+      "aria-label": "Tutup Iklan",
     });
     attachCountdownClose(closeBtn, wrap, BANNER_SKIP_AFTER);
 
     const tag = createEl("span", "bhv-ad-tag");
-    tag.textContent = "广告 · Ad";
+    tag.textContent = "Iklan";
 
     wrap.appendChild(img);
     wrap.appendChild(tag);
@@ -480,7 +480,7 @@
 
       const overlay = createEl("div", "bhv-ad-preroll", {
         role: "dialog",
-        "aria-label": "广告",
+      "aria-label": "Iklan",
       });
 
       const inner = createEl("div", "bhv-ad-preroll-inner");
@@ -507,7 +507,7 @@
       });
 
       const label = createEl("div", "bhv-ad-preroll-label");
-      label.textContent = cfg.label || "广告 · Ad";
+      label.textContent = cfg.label || "Iklan";
 
       // Close/skip button — stays disabled for the first `skipAfter`
       // seconds, then becomes clickable so the viewer can dismiss the
@@ -518,12 +518,12 @@
       skipBtn.disabled = true;
       const skipAfter = Math.max(0, Number(cfg.skipAfter) || 0);
       skipBtn.textContent =
-        skipAfter > 0 ? `${skipAfter}s 后可关闭` : "关闭广告 ›";
+        skipAfter > 0 ? `Tutup dalam ${skipAfter}s` : "Tutup Iklan ›";
 
       const learnBtn = createEl("button", "bhv-ad-preroll-cta", {
         type: "button",
       });
-      learnBtn.textContent = "了解详情 ›";
+      learnBtn.textContent = "Pelajari ›";
       learnBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         trackAd("preroll_cta", "click");
@@ -562,7 +562,7 @@
         if (!fallbackSrc) return;
         const img = createEl("img", "bhv-ad-preroll-video", {
           src: fallbackSrc,
-          alt: cfg.label || "广告",
+          alt: cfg.label || "Iklan",
         });
         img.style.cursor = cfg.clickUrl ? "pointer" : "default";
         img.addEventListener("click", () => {
@@ -577,7 +577,7 @@
       video.addEventListener("error", fallbackToImage);
       // Note: we intentionally do NOT bind `ended` to `done()`. With
       // `video.loop = true` the video keeps playing until the user
-      // clicks "关闭广告".
+      // clicks "Tutup Iklan".
 
       // Enable the close button after `skipAfter` seconds. The ad
       // continues to play; the user just decides when to dismiss.
@@ -585,7 +585,7 @@
       let timer = null;
       if (remaining <= 0) {
         skipBtn.disabled = false;
-        skipBtn.textContent = "关闭广告 ›";
+        skipBtn.textContent = "Tutup Iklan ›";
       } else {
         timer = setInterval(() => {
           remaining -= 1;
@@ -593,9 +593,9 @@
             clearInterval(timer);
             timer = null;
             skipBtn.disabled = false;
-            skipBtn.textContent = "关闭广告 ›";
+            skipBtn.textContent = "Tutup Iklan ›";
           } else {
-            skipBtn.textContent = `${remaining}s 后可关闭`;
+            skipBtn.textContent = `Tutup dalam ${remaining}s`;
           }
         }, 1000);
       }
