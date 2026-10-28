@@ -5,8 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>BH Video — 后台管理</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ff2d55'/%3E%3Cpolygon points='24,18 48,32 24,46' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=20261028" />
-  <link rel="stylesheet" href="admin.css?v=20261028" />
+  <link rel="stylesheet" href="styles.css?v=20261035" />
+  <link rel="stylesheet" href="admin.css?v=20261035" />
 </head>
 <body class="admin-page">
   <!-- ========== Login screen ========== -->
@@ -66,6 +66,11 @@
           <div class="kpi-value" id="kpiAdClicks">0</div>
           <div class="kpi-foot">曝光 <span id="kpiAdImpr">0</span> · CTR <span id="kpiAdCtr">0%</span></div>
         </div>
+        <div class="kpi-card">
+          <div class="kpi-label">爱心总数</div>
+          <div class="kpi-value" id="kpiLikesTotal">0</div>
+          <div class="kpi-foot">按 IP 去重 · 一人一心</div>
+        </div>
       </div>
 
       <!-- Daily UV chart -->
@@ -115,6 +120,24 @@
             </tr>
           </thead>
           <tbody id="videosTbody"></tbody>
+        </table>
+      </section>
+
+      <!-- Likes ranking table -->
+      <section class="admin-card">
+        <div class="admin-card-head">
+          <h2>❤️ 爱心排行榜</h2>
+          <span class="admin-muted">按作品的爱心数从高到低 · 同一 IP 只记一心</span>
+        </div>
+        <table class="admin-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>作品</th>
+              <th class="num">爱心数</th>
+            </tr>
+          </thead>
+          <tbody id="likesTbody"></tbody>
         </table>
       </section>
     </main>
@@ -333,7 +356,7 @@
     </div>
   </template>
 
-  <script src="videos.js?v=20261028"></script>
-  <script src="admin.js?v=20261028"></script>
+  <script src="videos.js?v=20261035"></script>
+  <script src="admin.js?v=20261035"></script>
 </body>
 </html>

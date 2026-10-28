@@ -1717,6 +1717,23 @@ body.feed-page .feed-item .feed-playpause {
   fill: var(--accent);
 }
 
+/* When the heart is active, dye the count red too for consistent
+   visual feedback, and pop the icon on each toggle. */
+.feed-side-btn.liked .feed-side-label {
+  color: var(--accent);
+}
+.feed-side-btn:active svg {
+  transform: scale(0.86);
+}
+.feed-side-btn.liked svg {
+  animation: feed-like-pop 0.28s ease-out;
+}
+@keyframes feed-like-pop {
+  0%   { transform: scale(1); }
+  40%  { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
 .feed-side-label {
   font-size: 12px;
   font-weight: 600;

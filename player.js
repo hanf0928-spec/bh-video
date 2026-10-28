@@ -51,6 +51,10 @@
   //   { "<seriesId>:ep<n>": { opens, plays, ends } }
   let playStats = {};
 
+  // Likes state keyed by seriesId: { count, liked }. Hydrated on boot
+  // from /api/likes and updated optimistically on every toggle.
+  const likesState = new Map();
+
   // Which episode's "play" we've already reported this session.
   // Guards against double-counting on pause/resume.
   const playReportedFor = new Set();
@@ -169,6 +173,67 @@
       });
   }
 
+  /** Hydrate per-series like counts (and whether the caller liked). */
+  function fetchLikes() {
+    return fetch("/api/likes", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data) => {
+        likesState.clear();
+        if (data && typeof data === "object") {
+          Object.keys(data).forEach((sid) => {
+            const entry = data[sid] || {};
+            likesState.set(sid, {
+              count: Number(entry.count) || 0,
+              liked: !!entry.liked_by_me,
+            });
+          });
+        }
+      })
+      .catch(() => {});
+  }
+
+  /** Toggle like on the server; optimistically update every card. */
+  function toggleLike(seriesId) {
+    if (!seriesId) return;
+    const prev = likesState.get(seriesId) || { count: 0, liked: false };
+    const next = {
+      count: prev.liked ? Math.max(0, prev.count - 1) : prev.count + 1,
+      liked: !prev.liked,
+    };
+    likesState.set(seriesId, next);
+    paintLikesForSeries(seriesId);
+
+    fetch("/api/likes/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: seriesId }),
+      keepalive: true,
+    })
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !data.ok) return;
+        likesState.set(seriesId, {
+          count: Number(data.count) || 0,
+          liked: !!data.liked,
+        });
+        paintLikesForSeries(seriesId);
+      })
+      .catch(() => {});
+  }
+
+  /** Repaint EVERY like button on the page that targets this series. */
+  function paintLikesForSeries(seriesId) {
+    const state = likesState.get(seriesId) || { count: 0, liked: false };
+    const btns = feedEl.querySelectorAll(
+      `.feed-item[data-series-id="${cssEscape(seriesId)}"] .feed-like`
+    );
+    btns.forEach((btn) => {
+      btn.classList.toggle("liked", !!state.liked);
+      const label = btn.querySelector("[data-like-count]");
+      if (label) label.textContent = formatCount(state.count || 0);
+    });
+  }
+
   function reportStat(seriesId, ep, event) {
     if (!seriesId || !ep || !event) return;
     const id = Catalog.episodeKey(seriesId, ep);
@@ -245,6 +310,7 @@
     const poster = episode.thumbnail || series.thumbnail || "";
     const plays = formatCount(episodePlayCount(series.id, episode));
     const epShort = t("series.epShort", { n: episode.ep });
+    const likeInfo = likesState.get(series.id) || { count: 0, liked: false };
 
     const item = document.createElement("section");
     item.className = "feed-item feed-item--player";
@@ -278,13 +344,17 @@
 
       <!-- Right-side action rail (like / share / episode picker) -->
       <div class="feed-side">
-        <button class="feed-side-btn feed-like" type="button" aria-label="点赞">
+        <button class="feed-side-btn feed-like${
+          likeInfo.liked ? " liked" : ""
+        }" type="button" aria-label="点赞">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
             <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
           </svg>
-          <span class="feed-side-label">${escapeHtml(plays)}</span>
+          <span class="feed-side-label" data-like-count>${escapeHtml(
+            formatCount(likeInfo.count)
+          )}</span>
         </button>
 
         <button class="feed-side-btn feed-share" type="button" aria-label="分享">
@@ -451,12 +521,16 @@
       showCardError(item, msg);
     });
 
-    // Like toggle.
+    // Like toggle — persist on the backend and sync every like
+    // button for this series on the current page.
     likeBtn.addEventListener("click", (e) => {
       e.stopPropagation();
-      likeBtn.classList.toggle("liked");
+      toggleLike(seriesId);
+      // Local toast feedback mirrors the state we just optimistically
+      // committed to likesState.
+      const stateAfter = likesState.get(seriesId);
       showToast(
-        likeBtn.classList.contains("liked")
+        stateAfter && stateAfter.liked
           ? t("toast.likeAdded")
           : t("toast.likeRemoved")
       );
@@ -757,7 +831,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     // Fetch library first so imported-but-not-built-in series work on
-    // hard refresh, then fetch stats (best effort), then boot.
-    Promise.all([fetchLibrary(), fetchPlayStats()]).then(boot);
+    // hard refresh, then fetch stats + likes (best effort), then boot.
+    Promise.all([fetchLibrary(), fetchPlayStats(), fetchLikes()]).then(boot);
   });
 })();

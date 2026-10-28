@@ -6,18 +6,19 @@
      "card" occupies 100vw × 100vh and represents ONE series.
    - Users swipe up/down to move between series (CSS scroll-snap
      + IntersectionObserver).
-   - The card currently in view auto-plays episode 1. When an
-     episode ends we automatically advance to the next episode
-     of the SAME series. When the last episode of a series
-     finishes we stay on that card (user can swipe to the next
-     series or re-watch).
-   - Only the visible card has an active <video> element to
-     keep memory + bandwidth in check (we lazily hydrate the
-     neighbouring card's poster image).
+   - The active card AUTO-PLAYS episode 1 as a muted preview. On
+     tap, we hand off to player.html with the current playback
+     time so the viewer keeps watching from the exact second.
+   - If the preview finishes episode 1 in the feed, we also hand
+     off to player.html at ep=2 so the next episode starts
+     playing automatically in the dedicated player page.
+   - Episodes src URLs are hydrated LAZILY from
+     /api/library/<id> only when a card first becomes active —
+     the initial catalog response stays small.
+   - Right-side action rail: ❤ like (persisted on the backend
+     per IP), 🔗 share deep-link, ☰ episode picker.
    - A top-right floating button acts as "back to home" — it
      scrolls the feed back to the very first series.
-   - Clicking the on-video title/CTA opens player.html for
-     the dedicated player page (sharing / deep-links).
    - Search still works: tapping the magnifier opens an overlay
      list that filters series by title/tag; picking a result
      scrolls the feed to that series.
@@ -38,6 +39,16 @@
   // Latest play counts from the backend. Shape:
   //   { "<seriesId>:ep<n>": { opens, plays, ends } }
   let playStats = {};
+
+  // Likes state keyed by seriesId. Shape:
+  //   { "<seriesId>": { count: number, liked: boolean } }
+  // Hydrated once on boot from /api/likes, and updated in place on
+  // every toggle so the UI stays in sync without a full refresh.
+  const likesState = new Map();
+
+  // In-flight episode source hydration promises. Keyed by seriesId
+  // so simultaneous activations don't duplicate requests.
+  const seriesSrcCache = new Map();
 
   // Per-series feed state. Map<seriesId, { currentEp, played: Set<n> }>
   // We keep this at module scope so re-entering a card remembers which
@@ -86,6 +97,104 @@
       .catch(() => {
         playStats = {};
       });
+  }
+
+  /**
+   * Pull the current likes snapshot. The server also tells us whether
+   * the caller's IP has already liked each series, so we can paint the
+   * heart red on first paint without a round-trip from the user.
+   */
+  function fetchLikes() {
+    return fetch("/api/likes", { headers: { Accept: "application/json" } })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((data) => {
+        likesState.clear();
+        if (data && typeof data === "object") {
+          Object.keys(data).forEach((sid) => {
+            const entry = data[sid] || {};
+            likesState.set(sid, {
+              count: Number(entry.count) || 0,
+              liked: !!entry.liked_by_me,
+            });
+          });
+        }
+      })
+      .catch(() => {});
+  }
+
+  /**
+   * Toggle like for a series. Optimistically updates the UI, then
+   * reconciles with the server's authoritative response. If the server
+   * errors out we leave the optimistic state in place (no good signal
+   * to roll back) but a page refresh will fix any drift.
+   */
+  function toggleLike(seriesId, likeBtn, labelEl) {
+    if (!seriesId) return;
+    const prev = likesState.get(seriesId) || { count: 0, liked: false };
+    const next = {
+      count: prev.liked ? Math.max(0, prev.count - 1) : prev.count + 1,
+      liked: !prev.liked,
+    };
+    likesState.set(seriesId, next);
+    paintLike(likeBtn, labelEl, next);
+
+    fetch("/api/likes/toggle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: seriesId }),
+      keepalive: true,
+    })
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data || !data.ok) return;
+        const authoritative = {
+          count: Number(data.count) || 0,
+          liked: !!data.liked,
+        };
+        likesState.set(seriesId, authoritative);
+        paintLike(likeBtn, labelEl, authoritative);
+      })
+      .catch(() => {});
+  }
+
+  /** Apply visual state (red heart + numeric label) to a like button. */
+  function paintLike(btn, label, state) {
+    if (!btn) return;
+    btn.classList.toggle("liked", !!(state && state.liked));
+    if (label) label.textContent = formatCount((state && state.count) || 0);
+  }
+
+  /**
+   * The catalog endpoint strips per-episode `src` URLs to keep the
+   * home feed payload tiny. When a card first becomes active we need
+   * the real URL to actually auto-play, so we lazily fetch the full
+   * series detail here. Results are cached per series for the lifetime
+   * of the page so repeated activations don't refetch.
+   */
+  function hydrateSeriesSrc(seriesId) {
+    if (!seriesId) return Promise.resolve(null);
+    const series = Catalog.findSeries(seriesId);
+    const firstEp = series && (series.episodes || [])[0];
+    if (firstEp && firstEp.src) {
+      // Already have the src — nothing to do.
+      return Promise.resolve(series);
+    }
+    const cached = seriesSrcCache.get(seriesId);
+    if (cached) return cached;
+    const p = fetch("/api/library/" + encodeURIComponent(seriesId), {
+      headers: { Accept: "application/json" },
+    })
+      .then((r) => (r && r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && data.series) {
+          Catalog.mergeImported([data.series]);
+          return Catalog.findSeries(seriesId);
+        }
+        return null;
+      })
+      .catch(() => null);
+    seriesSrcCache.set(seriesId, p);
+    return p;
   }
 
   function reportStat(seriesId, ep, event) {
@@ -165,9 +274,9 @@
     const desc = i18n.pickLocalized(series, "description");
     const tags = Array.isArray(series.tags) ? series.tags.slice(0, 3) : [];
     const epCount = (series.episodes || []).length;
-    const totalPlays = formatCount(seriesTotalPlays(series));
     const firstEp = (series.episodes || [])[0];
     const poster = (firstEp && firstEp.thumbnail) || series.thumbnail || "";
+    const likeInfo = likesState.get(series.id) || { count: 0, liked: false };
 
     const item = document.createElement("section");
     item.className = "feed-item";
@@ -175,22 +284,22 @@
     item.dataset.index = String(index);
 
     item.innerHTML = `
-      <!-- Poster image: a tiny ~5 KB JPG per card. Only the first few
-           cards use native loading=eager so the first-screen renders
-           instantly; the rest defer until the browser needs them. -->
-      <img class="feed-poster"
-           src="${escapeAttr(poster)}"
-           alt="${escapeAttr(title)}"
-           loading="${index < 2 ? "eager" : "lazy"}"
-           decoding="async" />
-
-      <!-- Lazily-hydrated <video> container — populated by activateItem(). -->
-      <div class="feed-video-host" data-video-host></div>
+      <!-- Preview video. src is injected lazily when the card becomes
+           active (see activateItem()), so the first-screen render
+           doesn't fetch 50 video streams at once. -->
+      <video class="feed-video"
+             playsinline webkit-playsinline
+             preload="none"
+             muted
+             loop
+             poster="${escapeAttr(poster)}"
+             data-series-id="${escapeAttr(series.id)}"></video>
 
       <!-- Dark gradient so overlays stay readable on any poster -->
       <div class="feed-gradient"></div>
 
-      <!-- Big center play icon (also acts as "open player" trigger). -->
+      <!-- Big center play icon — shown while paused only, as a
+           persistent "tap to open player" hint. -->
       <button class="feed-playpause" type="button" aria-label="播放">
         <svg class="icon-play" viewBox="0 0 24 24" width="56" height="56" fill="#fff">
           <path d="M8 5v14l11-7z"></path>
@@ -199,13 +308,17 @@
 
       <!-- Right-side action rail (like / share / episode picker) -->
       <div class="feed-side">
-        <button class="feed-side-btn feed-like" type="button" aria-label="点赞">
+        <button class="feed-side-btn feed-like${
+          likeInfo.liked ? " liked" : ""
+        }" type="button" aria-label="点赞">
           <svg viewBox="0 0 24 24" width="28" height="28" fill="none"
                stroke="currentColor" stroke-width="2"
                stroke-linecap="round" stroke-linejoin="round">
             <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z"></path>
           </svg>
-          <span class="feed-side-label">${escapeHtml(formatCount(totalPlays))}</span>
+          <span class="feed-side-label" data-like-count>${escapeHtml(
+            formatCount(likeInfo.count)
+          )}</span>
         </button>
 
         <button class="feed-side-btn feed-share" type="button" aria-label="分享">
@@ -315,26 +428,45 @@
   }
 
   /**
-   * Jump from the home feed to the full player page for ONE series.
-   * The home catalog response (via /api/library/catalog) does not
-   * carry per-episode `src` URLs — those are generated on demand on
-   * the player page — so we always hand off at ep=1, t=0 and let the
-   * player page fetch /api/library/<id> for the real playback data.
+   * Hand off from the home feed to player.html, carrying over the
+   * exact second the preview is at so playback feels seamless.
    *
-   * We also report an "open" event before navigating so the admin
-   * dashboard's video "打开数" counter reflects every click on a
-   * series card. Uses `fetch({ keepalive: true })` so the request
-   * survives the page navigation (otherwise the browser cancels
-   * in-flight XHRs when location.href changes).
+   * Behaviour:
+   *   • If the preview video has NOT finished → open ep=1 at t=<cur>.
+   *   • If the preview video HAS finished (currentTime >= duration-0.5)
+   *     → open ep=2 at t=0 so the viewer naturally sees the second
+   *     episode. If there is no ep=2 we stay on ep=1.
    */
   function openPlayerForItem(item) {
     const seriesId = item.dataset.seriesId;
     if (!seriesId) return;
-    // Fire-and-forget "open" telemetry for episode 1. keepalive=true
-    // keeps it alive across the imminent navigation.
-    reportStat(seriesId, 1, "open");
+    const series = Catalog.findSeries(seriesId);
+    const video = item.querySelector(".feed-video");
+    const curTime = video ? Number(video.currentTime) || 0 : 0;
+    const duration = video ? Number(video.duration) || 0 : 0;
+    const finished = duration > 0 && curTime >= duration - 0.5;
+
+    let targetEp = 1;
+    let targetT = Math.max(0, Math.floor(curTime));
+
+    if (finished) {
+      const episodes = (series && series.episodes) || [];
+      if (episodes.length >= 2) {
+        targetEp = Number(episodes[1].ep) || 2;
+      }
+      targetT = 0;
+    }
+
+    // Fire-and-forget "open" telemetry. keepalive=true keeps it alive
+    // across the imminent navigation.
+    reportStat(seriesId, targetEp, "open");
+
+    try { if (video) video.pause(); } catch (_) {}
+
     const url =
-      "player.html?id=" + encodeURIComponent(seriesId) + "&ep=1";
+      "player.html?id=" + encodeURIComponent(seriesId) +
+      "&ep=" + encodeURIComponent(targetEp) +
+      (targetT > 0 ? "&t=" + encodeURIComponent(targetT) : "");
     window.location.href = url;
   }
 
@@ -344,28 +476,59 @@
     const series = Catalog.findSeries(seriesId);
     if (!series) return;
 
+    const video = item.querySelector(".feed-video");
     const playBtn = item.querySelector(".feed-playpause");
     const likeBtn = item.querySelector(".feed-like");
+    const likeLabel = likeBtn && likeBtn.querySelector("[data-like-count]");
     const shareBtn = item.querySelector(".feed-share");
     const epPicker = item.querySelector(".feed-ep-picker");
-    const poster = item.querySelector(".feed-poster");
+    const progress = item.querySelector("[data-progress]");
 
-    // Tap on the poster area or the big center play icon → open the
-    // dedicated player page. (Previously this card also auto-played
-    // a <video> preview, but on a 50-series feed that burned tons of
-    // bandwidth + CPU for very little user value.)
+    // Tap on the video / center play icon → open the full player page
+    // and continue from the exact current time (or episode 2 if the
+    // preview has already finished).
     const openPlayer = () => openPlayerForItem(item);
-    if (poster) poster.addEventListener("click", openPlayer);
-    playBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      openPlayer();
-    });
+    if (video) video.addEventListener("click", openPlayer);
+    if (playBtn) {
+      playBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        openPlayer();
+      });
+    }
 
-    // Like toggle (purely local for now).
-    likeBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      likeBtn.classList.toggle("liked");
-    });
+    // Progress bar sync — keeps the thin bar at the bottom in step
+    // with the preview video.
+    if (video && progress) {
+      video.addEventListener("timeupdate", () => {
+        const d = Number(video.duration) || 0;
+        if (!d) return;
+        const pct = (video.currentTime / d) * 100;
+        progress.style.width = pct + "%";
+      });
+    }
+
+    // Pause overlay toggle (dim center icon when playing).
+    if (video) {
+      video.addEventListener("play", () => item.classList.remove("is-paused"));
+      video.addEventListener("pause", () => {
+        if (!video.ended) item.classList.add("is-paused");
+      });
+      // When the preview finishes playing episode 1, auto-hand off to
+      // player.html at ep=2 so the viewer keeps watching the next
+      // episode without manual tapping.
+      video.addEventListener("ended", () => {
+        openPlayer();
+      });
+    }
+
+    // Heart button → persist on the backend and reflect new state
+    // instantly on the UI.
+    if (likeBtn) {
+      likeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleLike(seriesId, likeBtn, likeLabel);
+      });
+    }
 
     shareBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -419,21 +582,46 @@
     );
     item.classList.add("is-active");
 
-    // Fire an "open" telemetry event the FIRST time this card becomes
-    // active in this session, so swiping through the home feed still
-    // populates the admin dashboard's "打开数" counter (previously only
-    // player.html reported anything). A dataset flag debounces repeat
-    // activations so sliding back and forth on the same card doesn't
-    // inflate the count.
+    const seriesId = item.dataset.seriesId;
+    const video = item.querySelector(".feed-video");
+
+    // One-shot "open" telemetry so dashboard counts matches reality
+    // even when users just swipe through the home feed without tapping.
     if (!item.dataset.openReported) {
       item.dataset.openReported = "1";
-      const seriesId = item.dataset.seriesId;
       if (seriesId) reportStat(seriesId, 1, "open");
     }
+
+    if (!seriesId || !video) return;
+
+    // Lazy-hydrate the actual episode source once per series, then
+    // start the muted preview.
+    hydrateSeriesSrc(seriesId).then((series) => {
+      // The user may have swiped past this card while we were loading.
+      if (!item.classList.contains("is-active")) return;
+      const firstEp = series && (series.episodes || [])[0];
+      if (!firstEp || !firstEp.src) return;
+      if (!video.src) {
+        video.src = firstEp.src;
+        video.load();
+      }
+      const p = video.play();
+      if (p && typeof p.catch === "function") {
+        p.catch(() => {
+          // Autoplay blocked → leave the center play icon visible as
+          // a hint; a tap still opens the full player page.
+          item.classList.add("is-paused");
+        });
+      }
+    });
   }
 
   function deactivateItem(item) {
     item.classList.remove("is-active");
+    const video = item.querySelector(".feed-video");
+    if (video) {
+      try { video.pause(); } catch (_) {}
+    }
   }
 
   /* ---------- Episode picker sheet ---------- */
@@ -624,20 +812,28 @@
   document.addEventListener("DOMContentLoaded", () => {
     bindSearch();
 
-    // Wait for the library (and best-effort stats) to resolve before
-    // the first render — otherwise we'd briefly flash the empty-state
-    // overlay because BUILTIN_SERIES is empty and the real catalog
-    // lives behind /api/library.
-    Promise.all([fetchLibrary(), fetchPlayStats()]).then(() => refreshAll());
+    // Wait for the library (and best-effort stats + likes) to resolve
+    // before the first render — otherwise we'd briefly flash the
+    // empty-state overlay because BUILTIN_SERIES is empty and the real
+    // catalog lives behind /api/library.
+    Promise.all([fetchLibrary(), fetchPlayStats(), fetchLikes()]).then(() =>
+      refreshAll()
+    );
 
     document.addEventListener("visibilitychange", () => {
-      // Pause everything when the tab is hidden.
       if (document.visibilityState === "hidden") {
-        // Home feed has no live <video> elements anymore (the preview
-        // was removed in favour of a lightweight poster-only feed) —
-        // nothing to pause when the tab goes to the background.
+        // Pause the active preview when the tab goes to the background
+        // so we don't keep streaming video in a hidden tab.
+        feedEl.querySelectorAll(".feed-video").forEach((v) => {
+          try { v.pause(); } catch (_) {}
+        });
       } else {
-        // Nothing to resume: cards are poster-only.
+        // Resume whichever card is currently active.
+        const active = feedEl.querySelector(".feed-item.is-active .feed-video");
+        if (active) {
+          const p = active.play();
+          if (p && typeof p.catch === "function") p.catch(() => {});
+        }
       }
     });
 

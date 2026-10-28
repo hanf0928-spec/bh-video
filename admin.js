@@ -41,10 +41,12 @@
   const kpiAdClicks = document.getElementById("kpiAdClicks");
   const kpiAdImpr = document.getElementById("kpiAdImpr");
   const kpiAdCtr = document.getElementById("kpiAdCtr");
+  const kpiLikesTotal = document.getElementById("kpiLikesTotal");
 
   const uvChart = document.getElementById("uvChart");
   const adsTbody = document.getElementById("adsTbody");
   const videosTbody = document.getElementById("videosTbody");
+  const likesTbody = document.getElementById("likesTbody");
 
   // ---- Library / upload tab elements ----
   const tabs = document.querySelectorAll(".admin-tab");
@@ -974,12 +976,14 @@
     renderUvChart(data.visits && data.visits.last_30_days);
     renderAdsTable(data.ads && data.ads.slots);
     renderVideosTable(data.videos && data.videos.episodes);
+    renderLikesTable(data.likes && data.likes.ranking);
   }
 
   function renderKpis(data) {
     const visits = data.visits || {};
     const videos = (data.videos && data.videos.totals) || {};
     const adsTot = (data.ads && data.ads.totals) || {};
+    const likes = data.likes || {};
 
     kpiUvToday.textContent = formatNumber(visits.today || 0);
     kpiUv30.textContent = formatNumber(visits.total_30d || 0);
@@ -991,6 +995,34 @@
     kpiAdClicks.textContent = formatNumber(adsTot.clicks || 0);
     kpiAdImpr.textContent = formatNumber(adsTot.impressions || 0);
     kpiAdCtr.textContent = (adsTot.ctr || 0).toFixed(2) + "%";
+
+    if (kpiLikesTotal) {
+      kpiLikesTotal.textContent = formatNumber(likes.total || 0);
+    }
+  }
+
+  /** Render the "爱心排行榜" table. ranking = sorted desc on backend. */
+  function renderLikesTable(ranking) {
+    if (!likesTbody) return;
+    const list = Array.isArray(ranking) ? ranking : [];
+    if (!list.length) {
+      likesTbody.innerHTML =
+        '<tr class="empty-row"><td colspan="3">暂无爱心数据</td></tr>';
+      return;
+    }
+    likesTbody.innerHTML = list
+      .map(function (row, i) {
+        return (
+          "<tr>" +
+          "<td>" + (i + 1) + "</td>" +
+          "<td>" + esc(row.title || row.id || "-") + "</td>" +
+          '<td class="num"><strong>' +
+          formatNumber(row.count || 0) +
+          "</strong></td>" +
+          "</tr>"
+        );
+      })
+      .join("");
   }
 
   function renderUvChart(series) {

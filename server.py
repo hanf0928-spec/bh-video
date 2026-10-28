@@ -30,6 +30,8 @@ POST /api/cos/batch_import     — scan a parent prefix, import one series per s
 DELETE /api/library/<id>       — remove a single imported series by id.
 DELETE /api/library?confirm=yes — wipe the entire imported library.
 POST /api/ads/track            — record ad impression / click events.
+GET  /api/likes                — per-series like counts + whether caller already liked.
+POST /api/likes/toggle         — toggle like for one series (dedup by caller IP).
 POST /api/admin/login          — password-gated login, returns a token.
 GET  /api/admin/overview       — aggregated dashboard payload (token req.).
 
@@ -60,6 +62,7 @@ DATA_FILE = os.path.join(ROOT_DIR, "views.json")
 LIBRARY_FILE = os.path.join(ROOT_DIR, "videos.local.json")
 ADS_STATS_FILE = os.path.join(ROOT_DIR, "ads_stats.json")
 VISITS_FILE = os.path.join(ROOT_DIR, "visits.json")
+LIKES_FILE = os.path.join(ROOT_DIR, "likes.json")
 COS_CONFIG_FILE = os.path.join(ROOT_DIR, "cos_config.json")
 VALID_EVENTS = ("open", "play", "ended")
 EVENT_FIELD = {"open": "opens", "play": "plays", "ended": "ends"}
@@ -93,6 +96,7 @@ _data_lock = threading.Lock()
 _library_lock = threading.Lock()
 _ads_lock = threading.Lock()
 _visits_lock = threading.Lock()
+_likes_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Stats persistence (views.json)
@@ -950,6 +954,75 @@ def _record_visit(ip):
     return True
 
 # ---------------------------------------------------------------------------
+# Likes persistence (likes.json)
+# ---------------------------------------------------------------------------
+# Shape: { "<seriesId>": ["<ip-hash>", "<ip-hash>", ...], ... }
+# A viewer liking a series multiple times from the same IP only counts
+# once; tapping the heart again removes their hash (toggle semantics).
+# This matches the H5 feed experience: red = you liked, grey = you didn't.
+
+def _load_likes():
+    if not os.path.isfile(LIKES_FILE):
+        return {}
+    try:
+        with open(LIKES_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+def _save_likes(likes):
+    tmp_path = LIKES_FILE + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(likes, f, ensure_ascii=False, indent=2, sort_keys=True)
+    os.replace(tmp_path, LIKES_FILE)
+
+def _toggle_like(series_id, ip):
+    """
+    Toggle like for (series_id, ip). Returns a dict:
+        { "liked": bool, "count": int }
+    `liked` reflects the NEW state after the toggle; `count` is the
+    total number of distinct IPs that currently like this series.
+    """
+    if not series_id:
+        return {"liked": False, "count": 0}
+    ip_hash = _hash_ip(ip or "")
+    with _likes_lock:
+        likes = _load_likes()
+        bucket = likes.get(series_id)
+        if not isinstance(bucket, list):
+            bucket = []
+        if ip_hash and ip_hash in bucket:
+            bucket.remove(ip_hash)
+            liked = False
+        else:
+            if ip_hash:
+                bucket.append(ip_hash)
+            liked = True
+        likes[series_id] = bucket
+        _save_likes(likes)
+        return {"liked": liked, "count": len(bucket)}
+
+def _get_likes_summary(ip=None):
+    """
+    Return a dict for every series known in likes.json:
+        { "<seriesId>": { "count": int, "liked_by_me": bool } }
+    If `ip` is None, `liked_by_me` is always False (public read).
+    """
+    ip_hash = _hash_ip(ip or "") if ip else ""
+    with _likes_lock:
+        likes = _load_likes()
+    out = {}
+    for sid, bucket in (likes or {}).items():
+        if not isinstance(bucket, list):
+            continue
+        out[sid] = {
+            "count": len(bucket),
+            "liked_by_me": bool(ip_hash) and ip_hash in bucket,
+        }
+    return out
+
+# ---------------------------------------------------------------------------
 # Admin session helpers
 # ---------------------------------------------------------------------------
 
@@ -1132,6 +1205,14 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
                 stats = _load_stats()
             self._send_json(HTTPStatus.OK, stats)
             return
+        if path == "/api/likes":
+            # Public summary of likes. Shape per series:
+            #   { "<seriesId>": { "count": int, "liked_by_me": bool } }
+            # `liked_by_me` is derived from the caller's IP so the H5
+            # feed can paint the heart red immediately on page load.
+            summary = _get_likes_summary(self._client_ip())
+            self._send_json(HTTPStatus.OK, summary)
+            return
         if path == "/api/library":
             with _library_lock:
                 imported = _load_library()
@@ -1186,6 +1267,8 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         path = self.path.split("?", 1)[0]
         if path == "/api/stats":
             return self._handle_stats_post()
+        if path == "/api/likes/toggle":
+            return self._handle_likes_toggle()
         if path == "/api/import":
             return self._handle_import_post()
         if path == "/api/import/file":
@@ -1457,6 +1540,40 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         self._send_json(
             HTTPStatus.OK,
             {"ok": True, "id": video_id, "stats": updated},
+        )
+
+    # ---- /api/likes/toggle POST ------------------------------------------
+    def _handle_likes_toggle(self):
+        """
+        Toggle a like for one series. Dedup is per-IP: the same client
+        tapping the heart twice removes their like (undo) rather than
+        inflating the counter. Body shape:
+            { "id": "<seriesId>" }
+        Returns:
+            { "ok": true, "id": "...", "liked": bool, "count": int }
+        """
+        payload, err = self._read_json_body(1024)
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+        if not isinstance(payload, dict):
+            self._send_error_json(HTTPStatus.BAD_REQUEST, "expected JSON object")
+            return
+        series_id = (payload.get("id") or "").strip()
+        if not series_id or len(series_id) > 256:
+            self._send_error_json(
+                HTTPStatus.BAD_REQUEST, "missing or invalid 'id'"
+            )
+            return
+        result = _toggle_like(series_id, self._client_ip())
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "id": series_id,
+                "liked": result["liked"],
+                "count": result["count"],
+            },
         )
 
     # ---- /api/import POST -------------------------------------------------
@@ -1760,6 +1877,17 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             ads_stats = _load_ads_stats()
         with _visits_lock:
             visits = _load_visits()
+        with _likes_lock:
+            likes_raw = _load_likes()
+        with _library_lock:
+            library_catalog = _load_library_catalog()
+
+        # Build an id -> title map so the admin UI can show readable
+        # names in the likes ranking instead of raw ids.
+        title_by_id = {}
+        for s in library_catalog or []:
+            if isinstance(s, dict) and s.get("id"):
+                title_by_id[s["id"]] = s.get("title") or s["id"]
 
         # Normalise ad stats so every known slot is reported, even if the
         # file has never seen that slot before.
@@ -1795,6 +1923,24 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         total_imp = sum(v["impressions"] for v in ads_payload.values())
         total_clk = sum(v["clicks"] for v in ads_payload.values())
 
+        # Likes ranking: sort every series that has ever been liked by
+        # descending unique-IP count. Entries missing from the library
+        # (e.g. a series was deleted after being liked) still appear
+        # with the raw id as title so the admin can clean them up.
+        likes_items = []
+        for sid, bucket in (likes_raw or {}).items():
+            if not isinstance(bucket, list):
+                continue
+            likes_items.append(
+                {
+                    "id": sid,
+                    "title": title_by_id.get(sid, sid),
+                    "count": len(bucket),
+                }
+            )
+        likes_items.sort(key=lambda x: (-x["count"], x["title"]))
+        total_likes = sum(item["count"] for item in likes_items)
+
         self._send_json(
             HTTPStatus.OK,
             {
@@ -1820,6 +1966,10 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
                     "today": today_uv,
                     "last_30_days": series,
                     "total_30d": total_uv,
+                },
+                "likes": {
+                    "ranking": likes_items,
+                    "total": total_likes,
                 },
             },
         )
