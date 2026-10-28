@@ -91,6 +91,18 @@
   const cosStatus = document.getElementById("cosStatus");
   const cosPreview = document.getElementById("cosPreview");
 
+  // ---- COS batch (parent folder) sub-panel ----
+  const cosSubBtns = document.querySelectorAll(".upload-cos-sub-btn");
+  const uploadCosSingle = document.getElementById("uploadCosSingle");
+  const uploadCosBatch = document.getElementById("uploadCosBatch");
+  const cosBatchPrefix = document.getElementById("cosBatchPrefix");
+  const cosBatchCategory = document.getElementById("cosBatchCategory");
+  const cosBatchAuthor = document.getElementById("cosBatchAuthor");
+  const cosBatchPreviewBtn = document.getElementById("cosBatchPreviewBtn");
+  const cosBatchImportBtn = document.getElementById("cosBatchImportBtn");
+  const cosBatchStatus = document.getElementById("cosBatchStatus");
+  const cosBatchPreview = document.getElementById("cosBatchPreview");
+
   /* ---------- Token helpers ---------- */
   function getToken() {
     try {
@@ -517,6 +529,203 @@
           " 集";
         cosStatus.className = "upload-status ok";
         renderCosPreview({ series: res.d.series, meta: res.d.meta });
+        loadLibrary();
+      });
+    });
+  }
+
+  /* ---------- COS: parent-folder batch import ---------- */
+
+  function activateCosSub(mode) {
+    cosSubBtns.forEach(function (b) {
+      b.classList.toggle("active", b.getAttribute("data-sub") === mode);
+    });
+    if (uploadCosSingle) uploadCosSingle.hidden = mode !== "single";
+    if (uploadCosBatch) uploadCosBatch.hidden = mode !== "batch";
+  }
+  cosSubBtns.forEach(function (b) {
+    b.addEventListener("click", function () {
+      activateCosSub(b.getAttribute("data-sub"));
+    });
+  });
+
+  function cosBatchPayload() {
+    return {
+      prefix: (cosBatchPrefix.value || "").trim(),
+      category: (cosBatchCategory.value || "").trim(),
+      author: (cosBatchAuthor.value || "").trim(),
+    };
+  }
+
+  function renderCosBatchPreview(data) {
+    if (!data || !Array.isArray(data.series) || !data.series.length) {
+      cosBatchPreview.hidden = true;
+      cosBatchPreview.innerHTML = "";
+      return;
+    }
+    const m = data.meta || {};
+    const failures = Array.isArray(data.failures) ? data.failures : [];
+    const rows = data.series
+      .map(function (s, i) {
+        const cover = s.thumbnail
+          ? '<img src="' + esc(s.thumbnail) + '" class="cos-batch-cover" alt="" />'
+          : '<div class="cos-batch-cover cos-batch-cover--empty">无封面</div>';
+        return (
+          '<li class="cos-batch-row">' +
+          cover +
+          '<div class="cos-batch-meta">' +
+          '<div class="cos-batch-title">' +
+          (i + 1) +
+          ". " +
+          esc(s.title) +
+          "</div>" +
+          '<div class="admin-muted">ID: ' +
+          esc(s.id) +
+          " · 集数: " +
+          (s.episode_count || 0) +
+          " · 路径: " +
+          esc(s.scan_prefix || "") +
+          "</div>" +
+          "</div>" +
+          "</li>"
+        );
+      })
+      .join("");
+
+    const failBlock = failures.length
+      ? '<div class="cos-batch-fail"><strong>⚠️ 跳过 ' +
+        failures.length +
+        " 个子文件夹：</strong><ul>" +
+        failures
+          .map(function (f) {
+            return (
+              "<li>" +
+              esc(f.name || f.prefix) +
+              " — <span class=\"admin-muted\">" +
+              esc(f.error || "未知错误") +
+              "</span></li>"
+            );
+          })
+          .join("") +
+        "</ul></div>"
+      : "";
+
+    cosBatchPreview.innerHTML =
+      '<div class="cos-preview-head"><div>' +
+      "<h3>🗂️ 父目录扫描结果</h3>" +
+      '<p class="admin-muted">父路径: ' +
+      esc(m.parent_prefix || "") +
+      " · 子文件夹: " +
+      (m.scanned_folders || 0) +
+      " · 可导入作品: " +
+      (m.built_series || data.series.length) +
+      " · 跳过: " +
+      (m.failed_folders || failures.length || 0) +
+      "</p></div></div>" +
+      '<ul class="cos-batch-list">' +
+      rows +
+      "</ul>" +
+      failBlock;
+    cosBatchPreview.hidden = false;
+  }
+
+  function cosBatchRequest(url, cb) {
+    const body = cosBatchPayload();
+    if (!body.prefix) {
+      cosBatchStatus.textContent = "请填写父目录路径";
+      cosBatchStatus.className = "upload-status err";
+      return;
+    }
+    cosBatchStatus.textContent = "扫描中…（子文件夹较多时请耐心等待）";
+    cosBatchStatus.className = "upload-status";
+    cosBatchPreviewBtn.disabled = true;
+    cosBatchImportBtn.disabled = true;
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer " + getToken(),
+      },
+      body: JSON.stringify(body),
+    })
+      .then(function (r) {
+        return r.json().then(function (d) {
+          return { ok: r.ok && d.ok, d: d };
+        });
+      })
+      .then(function (res) {
+        cosBatchPreviewBtn.disabled = false;
+        cosBatchImportBtn.disabled = false;
+        cb(res);
+      })
+      .catch(function (err) {
+        cosBatchPreviewBtn.disabled = false;
+        cosBatchImportBtn.disabled = false;
+        cosBatchStatus.textContent = "请求异常：" + (err && err.message);
+        cosBatchStatus.className = "upload-status err";
+      });
+  }
+
+  if (cosBatchPreviewBtn) {
+    cosBatchPreviewBtn.addEventListener("click", function () {
+      cosBatchRequest("/api/cos/batch_preview", function (res) {
+        if (!res.ok) {
+          cosBatchStatus.textContent =
+            "预览失败：" + (res.d.error || "未知错误");
+          cosBatchStatus.className = "upload-status err";
+          renderCosBatchPreview(null);
+          return;
+        }
+        const m = res.d.meta || {};
+        cosBatchStatus.textContent =
+          "扫描完成：发现 " +
+          (m.built_series || 0) +
+          " 部作品" +
+          (m.failed_folders ? "（跳过 " + m.failed_folders + " 个）" : "") +
+          "，确认无误后点击“批量导入”";
+        cosBatchStatus.className = "upload-status ok";
+        renderCosBatchPreview(res.d);
+      });
+    });
+  }
+
+  if (cosBatchImportBtn) {
+    cosBatchImportBtn.addEventListener("click", function () {
+      if (
+        !window.confirm(
+          "将把父目录下每个子文件夹作为一部短剧批量导入，是否继续？"
+        )
+      ) {
+        return;
+      }
+      cosBatchRequest("/api/cos/batch_import", function (res) {
+        if (!res.ok) {
+          cosBatchStatus.textContent =
+            "导入失败：" + (res.d.error || "未知错误");
+          cosBatchStatus.className = "upload-status err";
+          return;
+        }
+        cosBatchStatus.textContent =
+          "✅ 已批量导入 " +
+          (res.d.added || 0) +
+          " 部短剧" +
+          (res.d.failures && res.d.failures.length
+            ? "（跳过 " + res.d.failures.length + " 个无效文件夹）"
+            : "");
+        cosBatchStatus.className = "upload-status ok";
+        renderCosBatchPreview({
+          series: (res.d.series || []).map(function (s) {
+            return {
+              id: s.id,
+              title: s.title,
+              thumbnail: "",
+              episode_count: s.episode_count,
+              scan_prefix: "",
+            };
+          }),
+          meta: res.d.meta,
+          failures: res.d.failures,
+        });
         loadLibrary();
       });
     });

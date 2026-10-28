@@ -23,6 +23,8 @@ POST /api/import               — add imported series (JSON body).
 POST /api/import/file          — add imported series (JSON file upload).
 POST /api/cos/preview          — scan a Tencent COS prefix, preview episodes.
 POST /api/cos/import           — scan a Tencent COS prefix, import as a series.
+POST /api/cos/batch_preview    — scan a parent prefix, preview one series per sub-folder.
+POST /api/cos/batch_import     — scan a parent prefix, import one series per sub-folder.
 DELETE /api/library/<id>       — remove a single imported series by id.
 DELETE /api/library?confirm=yes — wipe the entire imported library.
 POST /api/ads/track            — record ad impression / click events.
@@ -448,6 +450,56 @@ def _list_cos_prefix(client, bucket, prefix):
     return items
 
 
+def _list_cos_subdirs(client, bucket, prefix):
+    """
+    List ONE level of sub-directories under `prefix` on COS.
+
+    COS doesn't have real folders — "directories" are inferred by the
+    SDK via `Delimiter="/"`, which returns CommonPrefixes alongside
+    the regular object list. We harvest only the common prefixes so a
+    caller can treat each sub-prefix as "one drama".
+
+    Returns a list of dicts: [{"prefix": "dramas/A/", "name": "A"}, ...]
+    sorted by name (natural lexicographic).
+    """
+    sub_prefixes = []
+    seen = set()
+    marker = ""
+    # Cap pagination at 200 pages (= up to 200k entries).
+    for _ in range(200):
+        resp = client.list_objects(
+            Bucket=bucket,
+            Prefix=prefix,
+            Marker=marker,
+            Delimiter="/",
+            MaxKeys=1000,
+        )
+        commons = resp.get("CommonPrefixes") or []
+        if isinstance(commons, dict):
+            commons = [commons]
+        for cp in commons:
+            # SDK may expose the key as .Prefix or ["Prefix"] depending
+            # on the version. Normalise both.
+            if isinstance(cp, dict):
+                sub = cp.get("Prefix") or cp.get("prefix") or ""
+            else:
+                sub = getattr(cp, "Prefix", "") or getattr(cp, "prefix", "")
+            if not sub or sub in seen:
+                continue
+            seen.add(sub)
+            # Human-readable folder name = last non-empty path segment.
+            name = sub.rstrip("/").split("/")[-1]
+            sub_prefixes.append({"prefix": sub, "name": name})
+        if resp.get("IsTruncated") in ("true", True):
+            marker = resp.get("NextMarker") or ""
+            if not marker:
+                break
+        else:
+            break
+    sub_prefixes.sort(key=lambda s: s["name"])
+    return sub_prefixes
+
+
 def _build_object_url(client, cfg, key):
     """Return a playable URL for one COS object key, honouring url_mode."""
     cdn = (cfg.get("cdn_domain") or "").strip().rstrip("/")
@@ -622,6 +674,93 @@ def _build_series_from_cos(prefix, title, author, category, description, custom_
         "scan_prefix": scan_prefix,
     }
     return series, meta, None
+
+
+def _build_series_batch_from_cos(parent_prefix, category, author):
+    """
+    Scan `parent_prefix` on COS, enumerate ONE level of sub-directories,
+    and build a Series dict for each sub-directory (treating it as one
+    drama whose title is the folder name).
+
+    Returns (series_list, failures, meta, error_str).
+
+    - `series_list`  : list of fully-formed Series dicts, deduped by id
+                       within the same batch call.
+    - `failures`     : list of {"name": "...", "prefix": "...", "error": "..."}
+                       for sub-dirs that couldn't be built (no videos, etc.).
+    - `meta`         : summary for the UI: scanned folders, built series…
+    - `error_str`    : top-level fatal error (COS down, no sub-dirs) or None.
+    """
+    client, cfg, err = _get_cos_client()
+    if err:
+        return None, None, None, err
+
+    bucket = cfg["bucket"]
+    parent = (parent_prefix or "").strip().lstrip("/")
+    if not parent:
+        return None, None, None, "父目录路径不能为空"
+    scan_prefix = parent if parent.endswith("/") else parent + "/"
+
+    try:
+        subdirs = _list_cos_subdirs(client, bucket, scan_prefix)
+    except Exception as e:
+        return None, None, None, "列举子目录失败: %s" % e
+
+    if not subdirs:
+        return None, None, None, (
+            "父目录下没有找到任何子文件夹: %s "
+            "（请确认路径以 / 结尾，且该目录下确实有一层子目录）" % scan_prefix
+        )
+
+    # Hard cap: never try to build more than MAX_SERIES_PER_IMPORT at once.
+    subdirs = subdirs[:MAX_SERIES_PER_IMPORT]
+
+    series_list = []
+    failures = []
+    seen_ids = set()
+
+    for sub in subdirs:
+        series, meta, err = _build_series_from_cos(
+            prefix=sub["prefix"],
+            title=sub["name"],              # folder name → drama title
+            author=author or "",
+            category=category or "",
+            description="",
+            custom_id="",                   # auto-slug from title
+        )
+        if err:
+            failures.append(
+                {"name": sub["name"], "prefix": sub["prefix"], "error": err}
+            )
+            continue
+
+        # Guard against two folders slugifying to the same id. Append
+        # a numeric suffix so later imports don't silently overwrite.
+        base_id = series["id"]
+        new_id = base_id
+        suffix = 2
+        while new_id in seen_ids:
+            new_id = "%s-%d" % (base_id, suffix)
+            suffix += 1
+        series["id"] = new_id
+        seen_ids.add(new_id)
+
+        series["_meta"] = meta              # keep per-series meta for UI
+        series_list.append(series)
+
+    if not series_list:
+        return None, failures, None, (
+            "共扫描 %d 个子文件夹，但没有一个可以作为作品导入（请检查其中是否有视频文件）"
+            % len(subdirs)
+        )
+
+    batch_meta = {
+        "parent_prefix": scan_prefix,
+        "scanned_folders": len(subdirs),
+        "built_series": len(series_list),
+        "failed_folders": len(failures),
+    }
+    return series_list, failures, batch_meta, None
 
 # ---------------------------------------------------------------------------
 # Ads stats persistence (ads_stats.json)
@@ -904,6 +1043,10 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
             return self._handle_cos_preview()
         if path == "/api/cos/import":
             return self._handle_cos_import()
+        if path == "/api/cos/batch_preview":
+            return self._handle_cos_batch_preview()
+        if path == "/api/cos/batch_import":
+            return self._handle_cos_batch_import()
         self._send_error_json(HTTPStatus.NOT_FOUND, "unknown endpoint")
 
     def do_DELETE(self):
@@ -1337,6 +1480,108 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
                 "added": len(cleaned),
                 "series": cleaned[0] if cleaned else None,
                 "meta": meta,
+            },
+        )
+
+    # ---- /api/cos/batch_preview POST -------------------------------------
+    def _handle_cos_batch_preview(self):
+        """
+        Scan a PARENT COS prefix, enumerate one level of sub-folders,
+        and preview a Series per sub-folder — without saving anything.
+        """
+        ok, err = self._auth_admin()
+        if not ok:
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, err)
+            return
+
+        payload, err = self._read_json_body(4096)
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+
+        series_list, failures, meta, err = _build_series_batch_from_cos(
+            parent_prefix=payload.get("prefix") or "",
+            category=payload.get("category") or "",
+            author=payload.get("author") or "",
+        )
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+
+        # Hide the long signed URLs in the preview response — the UI only
+        # needs titles, ids, episode counts and cover thumbnails. Keeping
+        # the full objects would bloat the payload for 100+ series.
+        light = [
+            {
+                "id": s["id"],
+                "title": s["title"],
+                "thumbnail": s.get("thumbnail", ""),
+                "episode_count": len(s.get("episodes", [])),
+                "scan_prefix": (s.get("_meta") or {}).get("scan_prefix", ""),
+                "cover_key": (s.get("_meta") or {}).get("cover_key", ""),
+            }
+            for s in series_list
+        ]
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "meta": meta,
+                "series": light,
+                "failures": failures or [],
+            },
+        )
+
+    # ---- /api/cos/batch_import POST --------------------------------------
+    def _handle_cos_batch_import(self):
+        """
+        Scan a PARENT COS prefix, build one Series per sub-folder, and
+        persist them all to the library in a single atomic write.
+        """
+        ok, err = self._auth_admin()
+        if not ok:
+            self._send_error_json(HTTPStatus.UNAUTHORIZED, err)
+            return
+
+        payload, err = self._read_json_body(4096)
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+
+        series_list, failures, meta, err = _build_series_batch_from_cos(
+            parent_prefix=payload.get("prefix") or "",
+            category=payload.get("category") or "",
+            author=payload.get("author") or "",
+        )
+        if err:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, err)
+            return
+
+        # Strip the per-series "_meta" field before merging — the library
+        # validator only accepts the official Series shape.
+        for s in series_list:
+            s.pop("_meta", None)
+
+        cleaned, verr = self._validate_and_merge_series(series_list, "append")
+        if verr:
+            self._send_error_json(HTTPStatus.BAD_REQUEST, verr)
+            return
+
+        self._send_json(
+            HTTPStatus.OK,
+            {
+                "ok": True,
+                "added": len(cleaned),
+                "meta": meta,
+                "failures": failures or [],
+                "series": [
+                    {
+                        "id": s["id"],
+                        "title": s["title"],
+                        "episode_count": len(s.get("episodes", [])),
+                    }
+                    for s in cleaned
+                ],
             },
         )
 

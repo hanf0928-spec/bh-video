@@ -178,41 +178,77 @@
 
         <!-- Mode: Tencent COS import -->
         <div id="uploadCos" class="upload-pane" hidden>
-          <p class="admin-muted upload-hint">
-            输入 COS 对象路径（Prefix，例如 <code>dramas/我的短剧/</code>），系统会扫描该路径下的所有视频文件，按集号从小到大排序后上架，并取路径下的 jpg 图片作为封面。
-          </p>
-          <div class="form-grid">
-            <label class="form-field form-field-wide">
-              <span>COS 对象路径 (Prefix) *</span>
-              <input id="cosPrefix" type="text" placeholder="dramas/my-drama/" />
-            </label>
-            <label class="form-field">
-              <span>作品名称</span>
-              <input id="cosTitle" type="text" placeholder="留空则取路径最后一段" />
-            </label>
-            <label class="form-field">
-              <span>自定义作品 ID</span>
-              <input id="cosId" type="text" placeholder="留空自动根据作品名生成" />
-            </label>
-            <label class="form-field">
-              <span>分类</span>
-              <input id="cosCategory" type="text" placeholder="如 都市 / 古装（默认: 短剧）" />
-            </label>
-            <label class="form-field">
-              <span>作者</span>
-              <input id="cosAuthor" type="text" placeholder="作者名" />
-            </label>
-            <label class="form-field form-field-wide">
-              <span>作品描述</span>
-              <input id="cosDescription" type="text" placeholder="作品简介" />
-            </label>
+          <!-- Sub-mode switcher: single-drama vs parent-folder batch -->
+          <div class="upload-modes upload-modes--sub">
+            <button class="upload-cos-sub-btn active" data-sub="single" type="button">📂 单剧目录导入</button>
+            <button class="upload-cos-sub-btn" data-sub="batch" type="button">🗂️ 父目录批量导入</button>
           </div>
-          <div class="upload-submit-row">
-            <button id="cosPreviewBtn" class="btn-secondary" type="button">🔍 预览扫描结果</button>
-            <button id="cosImportBtn" class="btn-primary" type="button">☁️ 导入到作品库</button>
-            <span id="cosStatus" class="upload-status"></span>
+
+          <!-- Sub-mode: single drama (original behaviour) -->
+          <div id="uploadCosSingle" class="upload-cos-sub">
+            <p class="admin-muted upload-hint">
+              输入 COS 对象路径（Prefix，例如 <code>dramas/我的短剧/</code>），系统会扫描该路径下的所有视频文件，按集号从小到大排序后上架，并取路径下的 jpg 图片作为封面。
+            </p>
+            <div class="form-grid">
+              <label class="form-field form-field-wide">
+                <span>COS 对象路径 (Prefix) *</span>
+                <input id="cosPrefix" type="text" placeholder="dramas/my-drama/" />
+              </label>
+              <label class="form-field">
+                <span>作品名称</span>
+                <input id="cosTitle" type="text" placeholder="留空则取路径最后一段" />
+              </label>
+              <label class="form-field">
+                <span>自定义作品 ID</span>
+                <input id="cosId" type="text" placeholder="留空自动根据作品名生成" />
+              </label>
+              <label class="form-field">
+                <span>分类</span>
+                <input id="cosCategory" type="text" placeholder="如 都市 / 古装（默认: 短剧）" />
+              </label>
+              <label class="form-field">
+                <span>作者</span>
+                <input id="cosAuthor" type="text" placeholder="作者名" />
+              </label>
+              <label class="form-field form-field-wide">
+                <span>作品描述</span>
+                <input id="cosDescription" type="text" placeholder="作品简介" />
+              </label>
+            </div>
+            <div class="upload-submit-row">
+              <button id="cosPreviewBtn" class="btn-secondary" type="button">🔍 预览扫描结果</button>
+              <button id="cosImportBtn" class="btn-primary" type="button">☁️ 导入到作品库</button>
+              <span id="cosStatus" class="upload-status"></span>
+            </div>
+            <div id="cosPreview" class="cos-preview" hidden></div>
           </div>
-          <div id="cosPreview" class="cos-preview" hidden></div>
+
+          <!-- Sub-mode: parent folder batch -->
+          <div id="uploadCosBatch" class="upload-cos-sub" hidden>
+            <p class="admin-muted upload-hint">
+              输入一个 <strong>父目录</strong> 的 COS 路径（例如 <code>dramas/</code>），系统会扫描该目录下的 <strong>每一个子文件夹</strong>，<strong>每个子文件夹作为一部完整短剧</strong>（作品名称默认取子文件夹名），批量入库。
+            </p>
+            <div class="form-grid">
+              <label class="form-field form-field-wide">
+                <span>父目录路径 (Prefix) *</span>
+                <input id="cosBatchPrefix" type="text" placeholder="dramas/" />
+              </label>
+              <label class="form-field">
+                <span>统一分类（可选）</span>
+                <input id="cosBatchCategory" type="text" placeholder="默认: 短剧" />
+              </label>
+              <label class="form-field">
+                <span>统一作者（可选）</span>
+                <input id="cosBatchAuthor" type="text" placeholder="作者名" />
+              </label>
+            </div>
+            <div class="upload-submit-row">
+              <button id="cosBatchPreviewBtn" class="btn-secondary" type="button">🔍 预览扫描结果</button>
+              <button id="cosBatchImportBtn" class="btn-primary" type="button">☁️ 批量导入作品库</button>
+              <span id="cosBatchStatus" class="upload-status"></span>
+            </div>
+            <div id="cosBatchPreview" class="cos-preview" hidden></div>
+          </div>
         </div>
       </section>
 
