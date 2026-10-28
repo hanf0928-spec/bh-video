@@ -1181,15 +1181,25 @@ class BHVideoHandler(SimpleHTTPRequestHandler):
         return ""
 
     def _client_ip(self):
-        """Best-effort client IP that honours a single reverse-proxy hop."""
+        """
+        Real client IP.
+
+        We always sit behind a reverse proxy / CDN, so `self.client_address`
+        is just the upstream edge node (identical for every visitor) and
+        would collapse all users into one for UV / likes-dedup / etc.
+
+        Spec: take the FIRST value of the `X-Forwarded-For` request
+        header. Header shape is `client, proxy1, proxy2, ...`, so the
+        leftmost value is the original client. If the header is missing
+        or empty we return "" rather than silently falling back to the
+        proxy address (otherwise all visitors would share the same hash).
+        """
         fwd = self.headers.get("X-Forwarded-For") or ""
-        if fwd:
-            # X-Forwarded-For: client, proxy1, proxy2 — take the first.
-            return fwd.split(",")[0].strip()
-        try:
-            return self.client_address[0]
-        except Exception:
+        if not fwd:
             return ""
+        # Header may contain several values separated by commas; the
+        # first one is the original client.
+        return fwd.split(",")[0].strip()
 
     def _bearer_token(self):
         auth = self.headers.get("Authorization") or ""
