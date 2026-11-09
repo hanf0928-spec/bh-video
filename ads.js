@@ -45,7 +45,7 @@
     },
     // Bottom banner (home + player page).
     bottomBanner: {
-      enabled: true,
+      enabled: false,
       image:
         "https://picsum.photos/seed/bh-bottom-ad/1600/160",
       clickUrl: "https://example.com/campaign/bottom",
@@ -53,7 +53,7 @@
     },
     // Floating box ad — small ad pinned to a corner.
     floatingBox: {
-      enabled: true,
+      enabled: false,
       image: "https://picsum.photos/seed/bh-float-ad/300/300",
       clickUrl: "https://example.com/campaign/float",
       alt: "悬浮广告 Floating Ad",
