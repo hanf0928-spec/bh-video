@@ -209,6 +209,19 @@ def _load_library_catalog():
     (title, cover, episode count, …) without shipping megabytes of
     signed URLs on every page load.
 
+    PERF: only the FIRST episode's metadata is included (as a fallback
+    poster source for cards whose series has no top-level `thumbnail`).
+    Every consumer of this endpoint (home feed, player-page search,
+    admin library table) only ever reads `episode_count` for the total
+    and `episodes[0]` for a poster — never episodes[1..N] — so shipping
+    every episode's title/thumbnail/duration/views for every series was
+    pure waste. For a library with many series × many episodes each,
+    this one change can cut the catalog payload (and the json.dumps +
+    gzip.compress time that blocks the response) by one to two orders
+    of magnitude. Full per-episode detail (with signed `src` URLs)
+    remains available via GET /api/library/<id> when a card is actually
+    activated or the player page opens.
+
     Lazy-built and cached alongside _load_library's cache so it costs
     nothing after the first call.
     """
@@ -221,20 +234,23 @@ def _load_library_catalog():
         if not isinstance(s, dict):
             continue
         episodes = s.get("episodes") or []
-        # Keep per-episode METADATA (number, title, duration, thumbnail,
-        # views) but strip the long `src` URL. Episode src is fetched
-        # lazily via /api/library/<id> when the player page opens.
-        light_eps = [
-            {
-                "ep": e.get("ep"),
-                "title": e.get("title", ""),
-                "thumbnail": e.get("thumbnail", ""),
-                "duration": e.get("duration", ""),
-                "views": e.get("views", ""),
-            }
-            for e in episodes
-            if isinstance(e, dict)
-        ]
+        episode_count = sum(1 for e in episodes if isinstance(e, dict))
+        first_ep = next((e for e in episodes if isinstance(e, dict)), None)
+        # Keep only the FIRST episode's metadata (no `src`) — just enough
+        # for a poster fallback. See PERF note above.
+        light_eps = (
+            [
+                {
+                    "ep": first_ep.get("ep"),
+                    "title": first_ep.get("title", ""),
+                    "thumbnail": first_ep.get("thumbnail", ""),
+                    "duration": first_ep.get("duration", ""),
+                    "views": first_ep.get("views", ""),
+                }
+            ]
+            if first_ep
+            else []
+        )
         light.append(
             {
                 "id": s.get("id"),
@@ -246,8 +262,8 @@ def _load_library_catalog():
                 "thumbnail": s.get("thumbnail", ""),
                 "i18n": s.get("i18n") or {},
                 "imported_at": s.get("imported_at", 0),
-                "episode_count": len(light_eps),
-                "episodes": light_eps,     # no `src` field — intentional
+                "episode_count": episode_count,
+                "episodes": light_eps,     # first episode only — intentional
             }
         )
     _lib_cache["catalog"] = light

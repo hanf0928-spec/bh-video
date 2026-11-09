@@ -809,7 +809,9 @@
         }
         libraryTbody.innerHTML = list
           .map(function (s, i) {
-            const epCount = (s.episodes || []).length;
+            // The catalog endpoint only ships the first episode (perf),
+            // so prefer the authoritative `episode_count` field.
+            const epCount = Number(s.episode_count) || (s.episodes || []).length;
             const safeId = esc(s.id);
             return (
               "<tr>" +

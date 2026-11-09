@@ -295,7 +295,11 @@
     const title = i18n.pickLocalized(series, "title");
     const desc = i18n.pickLocalized(series, "description");
     const tags = Array.isArray(series.tags) ? series.tags.slice(0, 3) : [];
-    const epCount = (series.episodes || []).length;
+    // The catalog endpoint only ships the FIRST episode (perf — see
+    // server.py), so prefer the authoritative `episode_count` field and
+    // fall back to the array length only once a series has been fully
+    // hydrated (which replaces `episodes` with the complete list).
+    const epCount = Number(series.episode_count) || (series.episodes || []).length;
     const firstEp = (series.episodes || [])[0];
     const poster = (firstEp && firstEp.thumbnail) || series.thumbnail || "";
     const likeInfo = likesState.get(series.id) || { count: 0, liked: false };
@@ -582,7 +586,13 @@
 
     epPicker.addEventListener("click", (e) => {
       e.stopPropagation();
-      openEpisodePicker(item, series);
+      // Re-resolve from the catalog at click time rather than closing
+      // over `series`: the catalog now ships only the first episode
+      // (perf), and Catalog.mergeImported() swaps in the FULL series
+      // object (every episode) once this card has been hydrated —
+      // but that replacement doesn't retroactively update this
+      // closure's `series` reference.
+      openEpisodePicker(item, Catalog.findSeries(seriesId) || series);
     });
   }
 
@@ -805,7 +815,7 @@
     searchResults.innerHTML = filtered
       .map((s) => {
         const title = i18n.pickLocalized(s, "title");
-        const ep = (s.episodes || []).length;
+        const ep = Number(s.episode_count) || (s.episodes || []).length;
         return `
           <div class="feed-search-row" data-series-id="${escapeAttr(s.id)}">
             <div class="feed-search-thumb">
