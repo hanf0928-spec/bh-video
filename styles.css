@@ -2098,6 +2098,24 @@ body.player-feed-page .feed-container {
   right: 14px;
 }
 
+/* ---- Tap-to-hide floating buttons ----
+   Toggled via body.feed-ui-hidden by player.js when the viewer taps
+   the video. Only the floating BUTTONS fade out — title/description
+   text, the gradient, the <video> itself and any ad placements
+   (bhv-ad-*, rendered outside this markup) are left untouched. */
+.feed-top-back,
+.feed-side,
+.feed-item.is-paused .feed-playpause {
+  transition: opacity 0.22s ease;
+}
+body.feed-ui-hidden .feed-top-back,
+body.feed-ui-hidden .feed-top-lang,
+body.feed-ui-hidden .feed-side,
+body.feed-ui-hidden .feed-item.is-paused .feed-playpause {
+  opacity: 0;
+  pointer-events: none;
+}
+
 /* ---- Error overlay inside a card ---- */
 
 .feed-error {

@@ -465,6 +465,16 @@
     return target;
   }
 
+  /* ---------- Tap-to-hide floating buttons ----------
+     Tapping the video surface toggles a body-level class that hides
+     every floating button (back chip, like/share/episode rail, the
+     center play/pause bubble) so the clip can be viewed unobstructed.
+     Ad placements (bhv-ad-*) live outside the feed markup entirely and
+     are therefore untouched by this toggle. */
+  function toggleChrome() {
+    document.body.classList.toggle("feed-ui-hidden");
+  }
+
   /* ---------- Per-card behaviour ---------- */
 
   function bindCard(item) {
@@ -478,6 +488,16 @@
     const likeBtn = item.querySelector(".feed-like");
     const shareBtn = item.querySelector(".feed-share");
     const epPicker = item.querySelector(".feed-ep-picker");
+
+    // Tapping the video toggles the floating buttons on/off. Taps that
+    // land on the native controls strip (play/seek/volume, bottom of
+    // the element) are ignored so dragging the progress bar doesn't
+    // also flicker the overlay buttons.
+    video.addEventListener("click", (e) => {
+      const rect = video.getBoundingClientRect();
+      if (rect.bottom - e.clientY < 44) return;
+      toggleChrome();
+    });
 
     // The big center overlay toggles play/pause (doesn't navigate).
     playBtn.addEventListener("click", (e) => {
