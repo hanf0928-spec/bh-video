@@ -1645,6 +1645,24 @@ body.feed-page .feed-item .feed-playpause {
   background: rgba(0, 0, 0, 0.25);
 }
 
+/* Transparent layer that owns the "tap video to hide/show floating
+   buttons" gesture on the player page (see player.js toggleChrome()).
+   Sits above the <video> but below the gradient/buttons/text in paint
+   order (DOM-order stacking), and stops short of the bottom edge so
+   the native video controls strip stays directly tappable/draggable. */
+.feed-tap-catcher {
+  position: absolute;
+  inset: 0;
+  bottom: 48px;
+  cursor: pointer;
+}
+/* Home-page cards have no native controls bar and no tap-to-hide
+   gesture (the whole card already navigates to the player), so don't
+   let this layer eat the navigation click there. */
+body.feed-page .feed-tap-catcher {
+  display: none;
+}
+
 .feed-gradient {
   position: absolute;
   inset: 0;

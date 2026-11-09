@@ -334,6 +334,15 @@
              data-series-id="${escapeAttr(series.id)}"
              data-ep-num="${escapeAttr(String(episode.ep))}"></video>
 
+      <!-- Transparent tap-target layered OVER the video (but under the
+           gradient/buttons/info in paint order) that toggles the
+           floating buttons. A dedicated layer — rather than a click
+           listener on <video> itself — because native video controls
+           swallow/alter tap events inconsistently across mobile
+           browsers. It stops short of the bottom native-controls
+           strip so dragging the progress bar still works. -->
+      <div class="feed-tap-catcher" aria-hidden="true"></div>
+
       <div class="feed-gradient"></div>
 
       <!-- Big center play/pause overlay only shown while paused.
@@ -484,20 +493,23 @@
     if (!series) return;
 
     const video = item.querySelector(".feed-video");
+    const tapCatcher = item.querySelector(".feed-tap-catcher");
     const playBtn = item.querySelector(".feed-playpause");
     const likeBtn = item.querySelector(".feed-like");
     const shareBtn = item.querySelector(".feed-share");
     const epPicker = item.querySelector(".feed-ep-picker");
 
-    // Tapping the video toggles the floating buttons on/off. Taps that
-    // land on the native controls strip (play/seek/volume, bottom of
-    // the element) are ignored so dragging the progress bar doesn't
-    // also flicker the overlay buttons.
-    video.addEventListener("click", (e) => {
-      const rect = video.getBoundingClientRect();
-      if (rect.bottom - e.clientY < 44) return;
-      toggleChrome();
-    });
+    // Tapping the open video area toggles the floating buttons on/off.
+    // Uses a dedicated transparent layer (not a listener on <video>
+    // itself) because native video controls swallow/alter tap events
+    // inconsistently across mobile browsers; the layer is shortened via
+    // CSS so the native controls strip at the bottom stays reachable.
+    if (tapCatcher) {
+      tapCatcher.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleChrome();
+      });
+    }
 
     // The big center overlay toggles play/pause (doesn't navigate).
     playBtn.addEventListener("click", (e) => {
