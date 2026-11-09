@@ -113,43 +113,49 @@
   /* ---------- API ---------- */
 
   function fetchLibrary() {
-    // Always hydrate the FULL catalog first so the search box / browse
-    // list on the player page can reach EVERY published series — not
-    // just the one currently playing. The lightweight catalog carries
-    // every series (title, cover, tags, …) without the heavy per-episode
-    // signed URLs, which is exactly what search needs.
-    const catalogP = fetch("/api/library/catalog", {
+    // Kick off BOTH requests immediately (in parallel) so we don't pay
+    // a sequential round-trip — but MERGE them in a deterministic order
+    // afterwards, not whenever each happens to resolve.
+    //
+    // Why order matters: `/api/library/catalog` is intentionally
+    // lightweight (only the FIRST episode's metadata per series, no
+    // `src` — see server.py), while `/api/library/<id>` returns the
+    // ONE requested series' FULL episode list with real signed `src`
+    // URLs. Catalog.mergeImported() overwrites by id, so whichever of
+    // the two merges LAST wins. If we merged in network-arrival order,
+    // a catalog response landing after the detail response would wipe
+    // out the full episode list we just fetched, collapsing it back
+    // down to episode #1 — every other episode's `src` becomes
+    // `undefined`, `video.src = undefined` stringifies to the literal
+    // path "/undefined", and playback 404s. Always merging the catalog
+    // FIRST and the single-series detail SECOND guarantees the
+    // detail's complete data is what survives, regardless of timing.
+    const catalogReq = fetch("/api/library/catalog", {
       headers: { Accept: "application/json" },
     })
       .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (data && Array.isArray(data.imported)) {
-          Catalog.mergeImported(data.imported);
-        }
-      })
-      .catch(() => {});
+      .catch(() => null);
 
-    // Then, if a specific series is requested (?id=...), fetch its full
-    // record (with per-episode signed `src`) and merge it on top. Because
-    // mergeImported() keys by id, the full record overwrites the lighter
-    // catalog entry for the same id, keeping the complete episode list.
     const id = getRequestedId();
-    const detailP = id
+    const detailReq = id
       ? fetch("/api/library/" + encodeURIComponent(id), {
           headers: { Accept: "application/json" },
         })
           .then((r) => (r.ok ? r.json() : null))
-          .then((data) => {
-            if (data && data.series) {
-              Catalog.mergeImported([data.series]);
-              return true;
-            }
-            return false;
-          })
-          .catch(() => false)
-      : Promise.resolve(false);
+          .catch(() => null)
+      : Promise.resolve(null);
 
-    return Promise.all([catalogP, detailP]).then(() => true);
+    return Promise.all([catalogReq, detailReq]).then(
+      ([catalogData, detailData]) => {
+        if (catalogData && Array.isArray(catalogData.imported)) {
+          Catalog.mergeImported(catalogData.imported);
+        }
+        if (detailData && detailData.series) {
+          Catalog.mergeImported([detailData.series]);
+        }
+        return true;
+      }
+    );
   }
 
   function fetchPlayStats() {
@@ -712,7 +718,15 @@
 
     const video = item.querySelector(".feed-video");
 
-    // Lazily attach the real source the first time we activate.
+    // Lazily attach the real source the first time we activate. Guard
+    // against a missing/empty `episode.src` (e.g. a stale catalog-only
+    // episode object) — assigning `video.src = undefined` would
+    // stringify to the literal path "/undefined" and 404. Surface the
+    // existing error overlay instead of firing that dead request.
+    if (!video.src && !episode.src) {
+      showCardError(item, t("error.generic"));
+      return;
+    }
     if (!video.src) {
       video.src = episode.src;
       video.load();
