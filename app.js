@@ -750,7 +750,13 @@
         return `
           <div class="feed-search-row" data-series-id="${escapeAttr(s.id)}">
             <div class="feed-search-thumb">
-              <img src="${escapeAttr(s.thumbnail)}" alt="" loading="lazy" />
+              ${
+                s.thumbnail
+                  ? `<img src="${escapeAttr(
+                      s.thumbnail
+                    )}" alt="" loading="lazy" />`
+                  : ""
+              }
             </div>
             <div class="feed-search-meta">
               <div class="feed-search-title">${escapeHtml(title)}</div>
