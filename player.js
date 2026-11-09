@@ -304,7 +304,7 @@
    *  - the right-side "episode picker" opens a sheet of SAME-series episodes
    *  - tapping the video does NOT navigate away
    */
-  function buildEpisodeCard(series, episode, index) {
+  function buildEpisodeCard(series, episode, index, isInitial) {
     const localSeriesTitle = i18n.pickLocalized(series, "title");
     const localDesc = i18n.pickLocalized(series, "description");
     const tags = Array.isArray(series.tags) ? series.tags.slice(0, 3) : [];
@@ -321,6 +321,17 @@
     item.dataset.index = String(index);
     item.setAttribute("role", "listitem");
 
+    // PERF: same reasoning as the home feed — a bare `poster` attribute
+    // is fetched immediately, regardless of `preload`. A series can carry
+    // 50-100+ episodes, so eagerly setting it on EVERY card would fire
+    // that many concurrent image downloads on page load. Only the
+    // initially-requested episode (the one scrolled into view on boot)
+    // gets a real `poster`; the rest get `data-poster`, hydrated lazily
+    // by observePosterLazyLoad() as they approach the viewport.
+    const posterAttr = isInitial
+      ? `poster="${escapeAttr(poster)}"`
+      : `data-poster="${escapeAttr(poster)}"`;
+
     item.innerHTML = `
       <!-- Native progress bar lives here because of the \`controls\` attr.
            object-fit: contain (set via CSS .feed-item--player) ensures
@@ -330,7 +341,7 @@
              controlsList="nodownload noremoteplayback"
              playsinline webkit-playsinline
              preload="metadata"
-             poster="${escapeAttr(poster)}"
+             ${posterAttr}
              data-series-id="${escapeAttr(series.id)}"
              data-ep-num="${escapeAttr(String(episode.ep))}"></video>
 
@@ -434,13 +445,18 @@
 
     const frag = document.createDocumentFragment();
     series.episodes.forEach((ep, i) => {
-      frag.appendChild(buildEpisodeCard(series, ep, i));
+      frag.appendChild(
+        buildEpisodeCard(series, ep, i, Number(ep.ep) === Number(initialEp))
+      );
     });
     feedEl.innerHTML = "";
     feedEl.appendChild(frag);
 
     // Wire up each card.
     feedEl.querySelectorAll(".feed-item").forEach((item) => bindCard(item));
+    // Lazily hydrate poster images for every card except the initially
+    // requested episode (see buildEpisodeCard's PERF note above).
+    observePosterLazyLoad();
 
     // Snap to the requested episode BEFORE enabling the observer so
     // the automatic "activate" fires on the right card.
@@ -609,6 +625,48 @@
         <div class="feed-error-msg">${escapeHtml(message)}</div>
       </div>
     `;
+  }
+
+  /* ---------- Lazy poster hydration ---------- */
+
+  let posterObserver = null;
+
+  /**
+   * Assigns the real `poster` attribute to episode cards' <video>
+   * elements only once they approach the viewport. A series can have
+   * 50-100+ episodes, so eagerly loading every poster on boot would
+   * fire that many concurrent image requests. rootMargin gives ~1.5
+   * screens of look-ahead so posters are ready before a swipe lands.
+   */
+  function observePosterLazyLoad() {
+    if (posterObserver) {
+      try { posterObserver.disconnect(); } catch (_) {}
+    }
+    if (typeof IntersectionObserver !== "function") {
+      feedEl.querySelectorAll(".feed-video[data-poster]").forEach((v) => {
+        v.poster = v.dataset.poster;
+        delete v.dataset.poster;
+      });
+      return;
+    }
+    posterObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const video = entry.target.querySelector(".feed-video");
+          if (video && video.dataset.poster) {
+            video.poster = video.dataset.poster;
+            delete video.dataset.poster;
+          }
+          posterObserver.unobserve(entry.target);
+        });
+      },
+      { root: feedEl, rootMargin: "150% 0px" }
+    );
+    feedEl.querySelectorAll(".feed-item").forEach((item) => {
+      const video = item.querySelector(".feed-video");
+      if (video && video.dataset.poster) posterObserver.observe(item);
+    });
   }
 
   /* ---------- Visibility orchestration ---------- */
@@ -858,8 +916,13 @@
   }
 
   document.addEventListener("DOMContentLoaded", () => {
-    // Fetch library first so imported-but-not-built-in series work on
-    // hard refresh, then fetch stats + likes (best effort), then boot.
-    Promise.all([fetchLibrary(), fetchPlayStats(), fetchLikes()]).then(boot);
+    // Fetch library + likes (best effort) before the first render — both
+    // affect what gets drawn. `fetchPlayStats()` is NOT awaited: its data
+    // isn't consumed by the card template (the `plays` value is computed
+    // but currently unused), so blocking boot on it just adds a needless
+    // round-trip before the video can start — let it resolve in the
+    // background instead.
+    Promise.all([fetchLibrary(), fetchLikes()]).then(boot);
+    fetchPlayStats();
   });
 })();

@@ -305,6 +305,19 @@
     item.dataset.seriesId = series.id;
     item.dataset.index = String(index);
 
+    // PERF: the poster image is fetched by the browser the instant the
+    // `poster` attribute is present, regardless of `preload`. With 20-50+
+    // series on the home feed, setting it eagerly on every card fires
+    // that many concurrent image downloads on first paint and is the
+    // single biggest contributor to a slow-feeling page load. Only the
+    // very first (immediately visible) card gets a real `poster`
+    // attribute; the rest get `data-poster` and are hydrated lazily by
+    // observePosterLazyLoad() as they approach the viewport.
+    const posterAttr =
+      index === 0
+        ? `poster="${escapeAttr(poster)}"`
+        : `data-poster="${escapeAttr(poster)}"`;
+
     item.innerHTML = `
       <!-- Preview video. src is injected lazily when the card becomes
            active (see activateItem()), so the first-screen render
@@ -314,7 +327,7 @@
              preload="none"
              muted
              loop
-             poster="${escapeAttr(poster)}"
+             ${posterAttr}
              data-series-id="${escapeAttr(series.id)}"></video>
 
       <!-- Dark gradient so overlays stay readable on any poster -->
@@ -423,6 +436,9 @@
 
     // Observe visibility so we can play the one in view.
     observeFeedItems();
+    // Lazily hydrate poster images for cards beyond the first (see
+    // buildFeedItem's PERF note above).
+    observePosterLazyLoad();
 
     // Kick-off: start the first item explicitly (IntersectionObserver
     // sometimes fires late on initial load).
@@ -567,6 +583,49 @@
     epPicker.addEventListener("click", (e) => {
       e.stopPropagation();
       openEpisodePicker(item, series);
+    });
+  }
+
+  /* ---------- Lazy poster hydration ---------- */
+
+  let posterObserver = null;
+
+  /**
+   * Assigns the real `poster` attribute to cards' <video> elements only
+   * once they approach the viewport, instead of all at once on first
+   * render. rootMargin gives ~1.5 screens of look-ahead in both scroll
+   * directions so posters are already loaded by the time a swipe lands
+   * on them — no visible pop-in, but far fewer simultaneous downloads.
+   */
+  function observePosterLazyLoad() {
+    if (posterObserver) {
+      try { posterObserver.disconnect(); } catch (_) {}
+    }
+    if (typeof IntersectionObserver !== "function") {
+      // No IO support (very old browser) — just hydrate everything now.
+      feedEl.querySelectorAll(".feed-video[data-poster]").forEach((v) => {
+        v.poster = v.dataset.poster;
+        delete v.dataset.poster;
+      });
+      return;
+    }
+    posterObserver = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          const video = entry.target.querySelector(".feed-video");
+          if (video && video.dataset.poster) {
+            video.poster = video.dataset.poster;
+            delete video.dataset.poster;
+          }
+          posterObserver.unobserve(entry.target);
+        });
+      },
+      { root: feedEl, rootMargin: "150% 0px" }
+    );
+    feedEl.querySelectorAll(".feed-item").forEach((item) => {
+      const video = item.querySelector(".feed-video");
+      if (video && video.dataset.poster) posterObserver.observe(item);
     });
   }
 
@@ -846,13 +905,15 @@
   document.addEventListener("DOMContentLoaded", () => {
     bindSearch();
 
-    // Wait for the library (and best-effort stats + likes) to resolve
-    // before the first render — otherwise we'd briefly flash the
-    // empty-state overlay because BUILTIN_SERIES is empty and the real
-    // catalog lives behind /api/library.
-    Promise.all([fetchLibrary(), fetchPlayStats(), fetchLikes()]).then(() =>
-      refreshAll()
-    );
+    // Wait for the library (and best-effort likes) to resolve before the
+    // first render — otherwise we'd briefly flash the empty-state overlay
+    // because BUILTIN_SERIES is empty and the real catalog lives behind
+    // /api/library. `fetchPlayStats()` is NOT awaited here: its data
+    // isn't consumed by the initial card render (see seriesTotalPlays,
+    // currently unused), so blocking first paint on it just adds a
+    // needless round-trip — let it resolve in the background instead.
+    Promise.all([fetchLibrary(), fetchLikes()]).then(() => refreshAll());
+    fetchPlayStats();
 
     document.addEventListener("visibilitychange", () => {
       if (document.visibilityState === "hidden") {

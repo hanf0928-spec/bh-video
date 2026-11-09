@@ -369,6 +369,10 @@
       src: cfg.image,
       alt: cfg.alt || "ad",
       loading: "lazy",
+      // Let the browser deprioritize ad creative bytes behind the
+      // video/catalog requests that actually drive the core UX.
+      // Chromium honors this; other engines ignore it harmlessly.
+      fetchpriority: "low",
     });
     img.addEventListener("click", () => {
       trackAd(position, "click");
@@ -405,6 +409,7 @@
       src: cfg.image,
       alt: cfg.alt || "ad",
       loading: "lazy",
+      fetchpriority: "low",
     });
     img.style.width = "100%";
     img.style.height = (cfg.height || 200) + "px";

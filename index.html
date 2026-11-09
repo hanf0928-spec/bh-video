@@ -6,8 +6,17 @@
   <meta name="theme-color" content="#000000" />
   <title data-i18n-title="site.title.home">BH Video — Tonton di Mana Saja</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='12' fill='%23ff2d55'/%3E%3Cpolygon points='24,18 48,32 24,46' fill='%23fff'/%3E%3C/svg%3E" />
-  <link rel="stylesheet" href="styles.css?v=20261037" />
-  <script src="i18n.js?v=20261037"></script>
+  <!-- Warm up the connection to the ad creative CDN so the top banner
+       (fetched by ads.js right after boot) doesn't pay a fresh
+       DNS+TLS handshake on top of its own download. -->
+  <link rel="preconnect" href="https://picsum.photos" crossorigin />
+  <link rel="dns-prefetch" href="https://picsum.photos" />
+  <link rel="stylesheet" href="styles.css?v=20261043" />
+  <!-- `defer` keeps execution order (document order, before
+       DOMContentLoaded) while letting the browser fetch all four
+       scripts in parallel with styles.css instead of i18n.js blocking
+       HTML parsing in <head>. -->
+  <script src="i18n.js?v=20261037" defer></script>
 </head>
 <body class="feed-page">
   <!-- Floating top overlay: logo + search + language switcher -->
@@ -55,8 +64,8 @@
     <p data-i18n="home.empty">Tidak ada video.</p>
   </div>
 
-  <script src="videos.js?v=20261040"></script>
-  <script src="app.js?v=20261040"></script>
-  <script src="ads.js?v=20261040"></script>
+  <script src="videos.js?v=20261040" defer></script>
+  <script src="app.js?v=20261044" defer></script>
+  <script src="ads.js?v=20261044" defer></script>
 </body>
 </html>
